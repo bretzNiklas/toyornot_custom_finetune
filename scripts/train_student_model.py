@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model-name", default="google/vit-base-patch16-224-in21k")
+    parser.add_argument("--no-lora", action="store_true", help="Disable LoRA and fine-tune the full backbone.")
     parser.add_argument("--resume-from", type=Path, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -50,6 +51,7 @@ def main() -> None:
         val_manifest=str(args.val_manifest.resolve()),
         output_dir=str(args.output_dir.resolve()),
         model_name=args.model_name,
+        use_lora=not args.no_lora,
         resume_from=str(args.resume_from.resolve()) if args.resume_from else None,
         epochs=args.epochs or default_epochs,
         batch_size=args.batch_size,

@@ -36,6 +36,7 @@ class TrainingConfig:
     val_manifest: str
     output_dir: str
     model_name: str = "google/vit-base-patch16-224-in21k"
+    use_lora: bool = True
     resume_from: str | None = None
     epochs: int = 10
     batch_size: int = 8
@@ -139,7 +140,10 @@ def create_model_and_processor(config: TrainingConfig):
         return load_student_bundle(Path(config.resume_from), device)[:2]
     processor = AutoImageProcessor.from_pretrained(config.model_name)
     model = GraffitiStudentModel(
-        StudentModelConfig(backbone_model_name=config.model_name),
+        StudentModelConfig(
+            backbone_model_name=config.model_name,
+            use_lora=config.use_lora,
+        ),
         load_pretrained_backbone=True,
     )
     return model, processor

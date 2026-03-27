@@ -7,9 +7,22 @@ from typing import Any
 
 from peft import LoraConfig, TaskType, get_peft_model
 from torch import nn
-from transformers import ViTConfig, ViTModel
+from transformers import AutoConfig, AutoModel
 
 from .constants import ALL_MEDIA, SCORE_FIELDS
+
+
+def infer_hidden_size(backbone_config: Any) -> int:
+    hidden_size = getattr(backbone_config, "hidden_size", None)
+    if hidden_size is not None:
+        return int(hidden_size)
+    hidden_sizes = getattr(backbone_config, "hidden_sizes", None)
+    if hidden_sizes:
+        return int(hidden_sizes[-1])
+    num_channels = getattr(backbone_config, "num_channels", None)
+    if num_channels is not None:
+        return int(num_channels)
+    raise ValueError("Could not infer hidden size from backbone config.")
 
 
 @dataclass(slots=True)
@@ -44,10 +57,10 @@ class GraffitiStudentModel(nn.Module):
         super().__init__()
         self.student_config = config
         if load_pretrained_backbone:
-            backbone = ViTModel.from_pretrained(config.backbone_model_name)
+            backbone = AutoModel.from_pretrained(config.backbone_model_name)
         else:
-            vit_config = ViTConfig.from_pretrained(config.backbone_model_name)
-            backbone = ViTModel(vit_config)
+            backbone_config = AutoConfig.from_pretrained(config.backbone_model_name)
+            backbone = AutoModel.from_config(backbone_config)
 
         if config.use_lora:
             lora_config = LoraConfig(
@@ -60,7 +73,7 @@ class GraffitiStudentModel(nn.Module):
             backbone = get_peft_model(backbone, lora_config)
 
         self.backbone = backbone
-        hidden_size = backbone.config.hidden_size
+        hidden_size = infer_hidden_size(backbone.config)
         self.dropout = nn.Dropout(config.hidden_dropout)
         self.usable_head = nn.Linear(hidden_size, 1)
         self.medium_head = nn.Linear(hidden_size, len(config.medium_labels))
@@ -70,7 +83,16 @@ class GraffitiStudentModel(nn.Module):
 
     def forward(self, pixel_values):
         outputs = self.backbone(pixel_values=pixel_values)
-        pooled = self.dropout(outputs.last_hidden_state[:, 0])
+        if getattr(outputs, "pooler_output", None) is not None:
+            pooled = self.dropout(outputs.pooler_output)
+        else:
+            last_hidden_state = outputs.last_hidden_state
+            if last_hidden_state.ndim == 3:
+                pooled = self.dropout(last_hidden_state[:, 0])
+            elif last_hidden_state.ndim == 4:
+                pooled = self.dropout(last_hidden_state.mean(dim=(-1, -2)))
+            else:
+                raise ValueError(f"Unsupported last_hidden_state shape: {tuple(last_hidden_state.shape)}")
         result = {
             "usable_logits": self.usable_head(pooled).squeeze(-1),
             "medium_logits": self.medium_head(pooled),
