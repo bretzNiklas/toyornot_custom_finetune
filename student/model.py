@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -80,9 +81,15 @@ class GraffitiStudentModel(nn.Module):
         self.color_applicable_head = nn.Linear(hidden_size, 1)
         self.overall_head = nn.Linear(hidden_size, 1)
         self.score_heads = nn.ModuleDict({field: nn.Linear(hidden_size, 1) for field in config.score_fields})
+        self._supports_interpolate_pos_encoding = (
+            "interpolate_pos_encoding" in inspect.signature(self.backbone.forward).parameters
+        )
 
     def forward(self, pixel_values):
-        outputs = self.backbone(pixel_values=pixel_values)
+        backbone_kwargs = {"pixel_values": pixel_values}
+        if self._supports_interpolate_pos_encoding:
+            backbone_kwargs["interpolate_pos_encoding"] = True
+        outputs = self.backbone(**backbone_kwargs)
         if getattr(outputs, "pooler_output", None) is not None:
             pooled = self.dropout(outputs.pooler_output)
         else:
