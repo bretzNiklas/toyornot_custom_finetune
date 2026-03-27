@@ -58,8 +58,12 @@ def build_eval_loader(model_dir: Path, manifest: Path, batch_size: int, num_work
 
 
 def quantize_dynamic_int8(model: nn.Module) -> nn.Module:
+    materialized = copy.deepcopy(model).cpu().eval()
+    backbone = getattr(materialized, "backbone", None)
+    if backbone is not None and hasattr(backbone, "merge_and_unload"):
+        materialized.backbone = backbone.merge_and_unload()
     quantized = torch.ao.quantization.quantize_dynamic(
-        copy.deepcopy(model).cpu().eval(),
+        materialized,
         {nn.Linear},
         dtype=torch.qint8,
     )
