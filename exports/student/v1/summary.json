@@ -1,0 +1,19 @@
+{
+  "total_rows": 1496,
+  "human_rows": 573,
+  "teacher_rows": 923,
+  "teacher_core_score_rows": 923,
+  "human_train_rows": 401,
+  "human_val_rows": 86,
+  "human_test_rows": 86,
+  "human_medium_counts": {
+    "digital": 105,
+    "other_or_unclear": 23,
+    "paper_sketch": 245,
+    "wall_piece": 164
+  },
+  "teacher_medium_counts": {
+    "paper_sketch": 626,
+    "wall_piece": 297
+  }
+}

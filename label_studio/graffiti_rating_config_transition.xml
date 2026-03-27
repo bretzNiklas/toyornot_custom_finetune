@@ -1,0 +1,103 @@
+<View style="display: flex; align-items: flex-start; gap: 1rem;">
+  <View style="flex: 1; min-width: 0;">
+    <Image name="image" value="$image" zoom="true" zoomControl="true" />
+  </View>
+
+  <View style="width: 430px; max-height: 85vh; overflow-y: auto; padding: 1rem; background: #fafafa; border-left: 1px solid #e5e7eb;">
+    <Header value="Graffiti Rating v1" />
+    <Header value="Score only what is visible. Use 1-10. Do not infer artist reputation or unseen context." />
+    <Header value="$file_name" />
+
+    <Choices name="image_usable" toName="image" choice="single-radio" showInline="true" required="true">
+      <Choice value="Usable" />
+      <Choice value="Unusable" />
+    </Choices>
+
+    <View visibleWhen="choice-selected" whenTagName="image_usable" whenChoiceValue="Usable">
+      <Header value="Medium" />
+      <Choices name="medium" toName="image" choice="single-radio" showInline="true" required="true">
+        <Choice value="Paper sketch" />
+        <Choice value="Wall piece" />
+        <Choice value="Digital" />
+        <Choice value="Other / unclear" />
+      </Choices>
+
+      <Header value="Piece Type" />
+      <Choices name="piece_type" toName="image" choice="single-radio" showInline="true" required="true">
+        <Choice value="Tag" />
+        <Choice value="Throwie" />
+        <Choice value="Straight letter" />
+        <Choice value="Piece" />
+        <Choice value="Wildstyle" />
+        <Choice value="Character" />
+        <Choice value="Mixed" />
+        <Choice value="Other" />
+      </Choices>
+
+      <Header value="Legibility" />
+      <Rating name="legibility" toName="image" maxRating="10" icon="star" size="medium" required="true" />
+
+      <Header value="Letter Structure" />
+      <Rating name="letter_structure" toName="image" maxRating="10" icon="star" size="medium" required="true" />
+
+      <Header value="Line Quality" />
+      <Rating name="line_quality" toName="image" maxRating="10" icon="star" size="medium" required="true" />
+
+      <Header value="Composition" />
+      <Rating name="composition" toName="image" maxRating="10" icon="star" size="medium" required="true" />
+
+      <Header value="Color Harmony" />
+      <Choices name="color_applicable" toName="image" choice="single-radio" showInline="true" required="true">
+        <Choice value="Applicable" />
+        <Choice value="Not applicable" />
+      </Choices>
+
+      <View visibleWhen="choice-selected" whenTagName="color_applicable" whenChoiceValue="Applicable">
+        <Rating name="color_harmony" toName="image" maxRating="10" icon="star" size="medium" required="true" />
+      </View>
+
+      <Header value="Originality" />
+      <Rating name="originality" toName="image" maxRating="10" icon="star" size="medium" required="true" />
+
+      <Header value="Confidence" />
+      <Choices name="confidence" toName="image" choice="single-radio" showInline="true" required="true">
+        <Choice value="Low" />
+        <Choice value="Medium" />
+        <Choice value="High" />
+      </Choices>
+
+      <Header value="Notes" />
+      <TextArea
+        name="notes"
+        toName="image"
+        rows="3"
+        editable="true"
+        maxSubmissions="1"
+        placeholder="Optional short note"
+      />
+    </View>
+
+    <View visibleWhen="choice-selected" whenTagName="image_usable" whenChoiceValue="Unusable">
+      <Header value="Why is it unusable?" />
+      <Choices name="unusable_reason" toName="image" choice="single-radio" required="true">
+        <Choice value="Blurry" />
+        <Choice value="Too dark" />
+        <Choice value="Cropped / partial" />
+        <Choice value="Not graffiti" />
+        <Choice value="Character-only / out of scope" />
+        <Choice value="Corrupt file" />
+        <Choice value="Other" />
+      </Choices>
+
+      <Header value="Notes" />
+      <TextArea
+        name="notes_unusable"
+        toName="image"
+        rows="3"
+        editable="true"
+        maxSubmissions="1"
+        placeholder="Optional short note"
+      />
+    </View>
+  </View>
+</View>
