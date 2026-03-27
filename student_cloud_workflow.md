@@ -117,3 +117,22 @@ Response shape:
   "originality": 5
 }
 ```
+
+## 9. Cheaper alternative: Modal
+
+If Hugging Face Endpoints are too expensive, deploy on Modal instead using [modal_deployment.md](C:/Users/qwert/Desktop/custom_model/modal_deployment.md).
+
+Install and authenticate Modal:
+
+```bash
+pip install modal
+modal setup
+```
+
+Then deploy:
+
+```bash
+modal deploy deploy/modal_app.py
+```
+
+The Modal app loads the trained bundle from `runs/student_v1/stage_b/best_bundle` and serves a POST endpoint using a `T4` GPU by default.
