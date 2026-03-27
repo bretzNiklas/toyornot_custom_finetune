@@ -2,6 +2,12 @@
 
 This document describes the deployed Modal inference API served by [modal_app.py](C:/Users/qwert/Desktop/custom_model/deploy/modal_app.py).
 
+Current live model:
+
+- `student-v2-dinov2`
+- backbone: `facebook/dinov2-base`
+- task: graffiti image usability gating plus quality scoring
+
 Important:
 
 - Do not call this API directly from a public browser client with the bearer token.
@@ -41,7 +47,7 @@ Success response:
 ```json
 {
   "status": "ok",
-  "model_version": "student-v1",
+  "model_version": "student-v2-dinov2",
   "app": "graffiti-student-v1"
 }
 ```
@@ -97,7 +103,7 @@ Example:
   "color_harmony": 7,
   "originality": 7,
   "request_id": "uuid-here",
-  "model_version": "student-v1"
+  "model_version": "student-v2-dinov2"
 }
 ```
 
@@ -122,6 +128,23 @@ Score fields are integers from `1` to `10` when applicable:
 
 Fields may be `null` when not applicable.
 
+### Debug Payload
+
+When `include_debug = true`, the response may also include:
+
+```json
+{
+  "debug": {
+    "usable_probability": 0.998,
+    "usable_threshold": 0.5,
+    "color_applicable_probability": 0.81,
+    "color_threshold": 0.45
+  }
+}
+```
+
+This is intended for internal debugging, not for public frontend display.
+
 ## Response Rules
 
 1. If `image_usable = false`, all score fields are `null`.
@@ -138,7 +161,7 @@ Errors return structured JSON:
   "error": "invalid_image",
   "message": "The uploaded content is not a valid image.",
   "request_id": "uuid-here",
-  "model_version": "student-v1"
+  "model_version": "student-v2-dinov2"
 }
 ```
 
@@ -159,6 +182,8 @@ Recommended flow:
 2. Your backend converts the file to base64 if needed.
 3. Your backend calls the Modal predict endpoint with the bearer token.
 4. Your backend returns a sanitized response to the frontend.
+
+Do not expose the bearer token or raw Modal URL from client-side browser code.
 
 ## Recommended TypeScript Types
 
@@ -200,9 +225,26 @@ type ApiError = {
 
 ## Product Guidance
 
-For `v1`, trust these outputs most:
+For the current live deployment, trust these outputs most:
 
 - `image_usable`
 - `overall_score`
 
-Treat `medium` as supporting metadata rather than a highly reliable classification output.
+`medium` is meaningfully better in `student-v2-dinov2` than in the original `v1`, but it should still be treated as secondary metadata rather than the core product output.
+
+The main product contract should remain:
+
+1. Is the image usable?
+2. If usable and in scope, what is the overall score?
+3. Optionally show rubric subscores as explanation.
+
+## Current Model Notes
+
+Observed properties of the live `student-v2-dinov2` deployment:
+
+- strong `image_usable` performance
+- clearly improved `overall_score` accuracy over the original ViT model
+- better `medium` stability than `v1`
+- small score drift under crop, rotation, or mirroring, but usually within the same rough quality band
+
+This means the API is suitable for production use where slight scoring variation is acceptable, but it should not be treated as a mathematically exact grading system.
