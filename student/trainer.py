@@ -197,12 +197,13 @@ def evaluate_model(
     rows: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, float]]:
     model.eval()
+    device = next(model.parameters()).device
     probability_records: list[dict[str, Any]] = []
     medium_labels = list(model.student_config.medium_labels)
     row_by_file = {row["file"]: row for row in rows}
 
     for batch in loader:
-        pixel_values = batch["pixel_values"]
+        pixel_values = batch["pixel_values"].to(device)
         with torch.inference_mode():
             outputs = model(pixel_values=pixel_values)
         usable_probabilities = torch.sigmoid(outputs["usable_logits"]).detach().cpu().tolist()
