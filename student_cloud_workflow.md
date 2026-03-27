@@ -132,6 +132,7 @@ modal setup
 Then deploy:
 
 ```bash
+modal secret create graffiti-student-web-auth AUTH_TOKEN=your_long_random_token
 modal deploy deploy/modal_app.py
 ```
 
