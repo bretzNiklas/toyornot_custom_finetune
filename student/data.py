@@ -33,10 +33,18 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def resolve_absolute_path(row: dict[str, Any], root: Path) -> str:
+    relative_path = row.get("relative_path")
+    if relative_path:
+        relative_candidate = (root / relative_path).resolve()
+        if relative_candidate.exists():
+            return str(relative_candidate)
+
     absolute_path = row.get("absolute_path")
     if absolute_path:
-        return str(Path(absolute_path).resolve())
-    relative_path = row.get("relative_path")
+        absolute_candidate = Path(absolute_path)
+        if absolute_candidate.exists():
+            return str(absolute_candidate.resolve())
+
     if not relative_path:
         raise ValueError(f"Row {row.get('file')} is missing both absolute_path and relative_path.")
     return str((root / relative_path).resolve())
@@ -208,7 +216,12 @@ class GraffitiTrainingDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
-        image = Image.open(row["absolute_path"]).convert("RGB")
+        image_path = Path(row["absolute_path"])
+        if not image_path.exists():
+            relative_path = row.get("relative_path")
+            if relative_path:
+                image_path = (Path.cwd() / relative_path).resolve()
+        image = Image.open(image_path).convert("RGB")
         pixel_values = self.transform(image)
 
         usable_target = 1.0 if row.get("image_usable") else 0.0
