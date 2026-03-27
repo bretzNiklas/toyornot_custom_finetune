@@ -98,8 +98,8 @@ The final student is a multi-head vision model, not a set of separate one-task m
 
 Architecture:
 
-- `ViT-base` image encoder
-- LoRA-based fine-tuning
+- winning backbone: `DINOv2 Base`
+- LoRA-based fine-tuning during training
 - shared backbone with multiple prediction heads
 
 Training strategy:
@@ -119,49 +119,65 @@ Digital and unclear images remain in the dataset for `medium` learning, but scor
 
 ## Final Result
 
-The current deployed `v1` student met the main scoring targets on the locked human test set.
+The originally deployed baseline was a `ViT-base` student, but further benchmarking found a clearly better production model:
 
-Test metrics:
+- winning model: `student-v2-dinov2`
+- backbone: `facebook/dinov2-base`
 
-- `image_usable` accuracy: `0.977`
-- `image_usable` precision: `0.976`
+Locked human test metrics for the winning model:
+
+- `image_usable` accuracy: `0.988`
+- `image_usable` precision: `0.988`
 - `image_usable` recall: `1.000`
-- `image_usable` F1: `0.988`
-- `overall_score` MAE: `1.016`
-- `overall_band_accuracy`: `0.597`
-- `paper_sketch` overall-score MAE: `0.892`
-- `wall_piece` overall-score MAE: `1.200`
+- `image_usable` F1: `0.994`
+- `medium` accuracy: `0.815`
+- `overall_score` MAE: `0.710`
+- `overall_band_accuracy`: `0.710`
+- `paper_sketch` overall-score MAE: `0.622`
+- `wall_piece` overall-score MAE: `0.840`
 
 Rubric MAE:
 
-- `legibility`: `1.532`
-- `letter_structure`: `1.129`
-- `line_quality`: `1.710`
-- `composition`: `1.323`
-- `color_harmony`: `1.184`
-- `originality`: `1.194`
+- `legibility`: `1.242`
+- `letter_structure`: `0.887`
+- `line_quality`: `1.194`
+- `composition`: `1.016`
+- `color_harmony`: `1.103`
+- `originality`: `0.887`
 
-The weakest head is `medium`, with accuracy around `0.52`, so in the current product shape it should be treated as supporting metadata rather than the primary product output.
+Model ranking from the benchmark run:
 
-The strongest outputs are:
+1. `dinov2_base_224`
+2. `vit_base_384`
+3. original `vit_base_224`
+4. `convnextv2_tiny_224`
+
+The strongest outputs remain:
 
 - `image_usable`
 - `overall_score`
 
+`medium` is much better in the DINOv2 model than in the original baseline, but it is still secondary to the main score.
+
 ## Deployment
 
-Training was designed for a rented cloud GPU box rather than a local desktop GPU.
+Training was done on a rented cloud GPU box, but the final production deployment does not require cloud GPU hosting.
 
-Serving was implemented with two options:
+The live production path is:
 
-- Hugging Face Inference Endpoints
-- Modal
+- model host: local Ubuntu server
+- inference stack: FastAPI + uvicorn
+- reverse proxy: nginx
+- public exposure: Cloudflare named tunnel
+- public hostname: `https://api.piecerate.me`
 
-The cheaper deployed path is Modal, using:
+This replaced the earlier Modal deployment path after benchmarking showed the local CPU host was fast enough and dramatically cheaper.
 
-- a packaged trained model bundle
-- a custom Python predictor
-- a protected POST API
+Measured local CPU inference on the production host:
+
+- first hit: about `805 ms`
+- warm average: about `807 ms`
+- p95 warm: about `810 ms`
 
 Current endpoint hardening includes:
 
@@ -172,8 +188,6 @@ Current endpoint hardening includes:
 - health endpoint
 - request ids
 - model version tagging
-
-Measured live end-to-end inference latency on the deployed Modal endpoint was about `0.9s` per request.
 
 ## Repository Structure
 
@@ -193,9 +207,9 @@ High-signal files and directories:
   Student model, trainer, inference, and metrics code
 - [scripts](C:/Users/qwert/Desktop/custom_model/scripts)  
   Data prep, conversion, training, evaluation, and packaging scripts
-- [deploy/modal_app.py](C:/Users/qwert/Desktop/custom_model/deploy/modal_app.py)  
-  Modal deployment entrypoint
-- [modal_api_spec.md](C:/Users/qwert/Desktop/custom_model/modal_api_spec.md)  
+- [deploy/local_api.py](C:/Users/qwert/Desktop/custom_model/deploy/local_api.py)  
+  Local Ubuntu API entrypoint
+- [api_spec.md](C:/Users/qwert/Desktop/custom_model/api_spec.md)  
   API contract for frontend/backend integration
 
 ## Reproducing The Pipeline
@@ -216,7 +230,8 @@ Operational docs:
 
 - [student_cloud_workflow.md](C:/Users/qwert/Desktop/custom_model/student_cloud_workflow.md)
 - [modal_deployment.md](C:/Users/qwert/Desktop/custom_model/modal_deployment.md)
-- [modal_api_spec.md](C:/Users/qwert/Desktop/custom_model/modal_api_spec.md)
+- [deploy_local_ubuntu.md](C:/Users/qwert/Desktop/custom_model/deploy_local_ubuntu.md)
+- [api_spec.md](C:/Users/qwert/Desktop/custom_model/api_spec.md)
 
 ## Limitations
 
@@ -234,6 +249,8 @@ This repository demonstrates a complete applied ML workflow:
 - LLM-based weak supervision
 - dataset review and split discipline
 - multi-head fine-tuning of a smaller vision model
-- cloud deployment with a production-oriented API contract
+- model benchmarking across multiple backbones
+- practical cost-driven deployment migration from cloud GPU serving to self-hosted CPU inference
+- production-style API deployment with authentication and stable public routing
 
 The key result is not just a trained model. It is a full system for turning a messy, unlabeled visual dataset into a usable, deployable domain model with explicit tradeoffs and measurable performance.

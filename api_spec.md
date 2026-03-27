@@ -1,6 +1,6 @@
-# Modal API Spec
+# API Spec
 
-This document describes the deployed Modal inference API served by [modal_app.py](C:/Users/qwert/Desktop/custom_model/deploy/modal_app.py).
+This document describes the live public inference API served from your Ubuntu box by [local_api.py](C:/Users/qwert/Desktop/custom_model/deploy/local_api.py), exposed through a Cloudflare named tunnel on `api.piecerate.me`.
 
 Current live model:
 
@@ -12,12 +12,11 @@ Important:
 
 - Do not call this API directly from a public browser client with the bearer token.
 - Store the token on your backend, server action, edge function, or API route.
-- Let the frontend call your own backend, and let your backend call Modal.
+- Let the frontend call your own backend, and let your backend call this API.
 
-## Base URLs
+## Base URL
 
-- Health: `https://bretzniklas--graffiti-student-v1-graffitistudentservice-health.modal.run`
-- Predict: `https://bretzniklas--graffiti-student-v1-graffitistudentservice-predict.modal.run`
+- `https://api.piecerate.me`
 
 ## Authentication
 
@@ -32,13 +31,13 @@ Authorization: Bearer <YOUR_SECRET_TOKEN>
 Method:
 
 ```http
-GET /
+GET /health
 ```
 
 Example:
 
 ```http
-GET https://bretzniklas--graffiti-student-v1-graffitistudentservice-health.modal.run
+GET https://api.piecerate.me/health
 Authorization: Bearer <YOUR_SECRET_TOKEN>
 ```
 
@@ -48,7 +47,7 @@ Success response:
 {
   "status": "ok",
   "model_version": "student-v2-dinov2",
-  "app": "graffiti-student-v1"
+  "app": "graffiti-student-local"
 }
 ```
 
@@ -57,7 +56,7 @@ Success response:
 Method:
 
 ```http
-POST /
+POST /predict
 ```
 
 Headers:
@@ -180,10 +179,10 @@ Recommended flow:
 
 1. Frontend uploads an image to your backend.
 2. Your backend converts the file to base64 if needed.
-3. Your backend calls the Modal predict endpoint with the bearer token.
+3. Your backend calls `POST https://api.piecerate.me/predict` with the bearer token.
 4. Your backend returns a sanitized response to the frontend.
 
-Do not expose the bearer token or raw Modal URL from client-side browser code.
+Do not expose the bearer token or raw API URL from client-side browser code.
 
 ## Recommended TypeScript Types
 
@@ -248,3 +247,15 @@ Observed properties of the live `student-v2-dinov2` deployment:
 - small score drift under crop, rotation, or mirroring, but usually within the same rough quality band
 
 This means the API is suitable for production use where slight scoring variation is acceptable, but it should not be treated as a mathematically exact grading system.
+
+## Deployment Notes
+
+Current production path:
+
+- model host: local Ubuntu server
+- app server: FastAPI + uvicorn
+- reverse proxy: nginx
+- public exposure: Cloudflare named tunnel
+- public hostname: `https://api.piecerate.me`
+
+This replaced the earlier Modal deployment path for cost reasons.
