@@ -96,20 +96,21 @@ def export_to_onnx(model: nn.Module, onnx_path: Path, *, opset: int) -> None:
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     wrapper = OnnxExportWrapper(model).eval()
     dummy = torch.randn(1, 3, 224, 224, dtype=torch.float32)
-    torch.onnx.export(
-        wrapper,
-        (dummy,),
-        str(onnx_path),
-        export_params=True,
-        opset_version=opset,
-        do_constant_folding=True,
-        input_names=["pixel_values"],
-        output_names=OUTPUT_NAMES,
-        dynamic_axes={
-            "pixel_values": {0: "batch"},
-            **{name: {0: "batch"} for name in OUTPUT_NAMES},
-        },
-    )
+    with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
+        torch.onnx.export(
+            wrapper,
+            (dummy,),
+            str(onnx_path),
+            export_params=True,
+            opset_version=opset,
+            do_constant_folding=True,
+            input_names=["pixel_values"],
+            output_names=OUTPUT_NAMES,
+            dynamic_axes={
+                "pixel_values": {0: "batch"},
+                **{name: {0: "batch"} for name in OUTPUT_NAMES},
+            },
+        )
 
 
 def build_onnx_session(onnx_path: Path):
