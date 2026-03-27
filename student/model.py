@@ -28,6 +28,7 @@ def infer_hidden_size(backbone_config: Any) -> int:
 @dataclass(slots=True)
 class StudentModelConfig:
     backbone_model_name: str = "google/vit-base-patch16-224-in21k"
+    attn_implementation: str | None = None
     hidden_dropout: float = 0.1
     use_lora: bool = True
     lora_r: int = 16
@@ -56,11 +57,17 @@ class GraffitiStudentModel(nn.Module):
     ) -> None:
         super().__init__()
         self.student_config = config
+        backbone_kwargs: dict[str, Any] = {}
+        if config.attn_implementation:
+            backbone_kwargs["attn_implementation"] = config.attn_implementation
         if load_pretrained_backbone:
-            backbone = AutoModel.from_pretrained(config.backbone_model_name)
+            backbone = AutoModel.from_pretrained(config.backbone_model_name, **backbone_kwargs)
         else:
             backbone_config = AutoConfig.from_pretrained(config.backbone_model_name)
-            backbone = AutoModel.from_config(backbone_config)
+            if config.attn_implementation:
+                setattr(backbone_config, "_attn_implementation", config.attn_implementation)
+                setattr(backbone_config, "attn_implementation", config.attn_implementation)
+            backbone = AutoModel.from_config(backbone_config, **backbone_kwargs)
 
         if config.use_lora:
             lora_config = LoraConfig(

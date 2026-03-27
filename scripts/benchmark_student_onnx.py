@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from safetensors.torch import load_file
 from torch import nn
 from torch.utils.data import DataLoader
 
@@ -22,6 +23,7 @@ from student.checkpoint import load_student_bundle
 from student.constants import CORE_MEDIA, SCORE_FIELDS
 from student.data import GraffitiTrainingDataset, LabelMaps, collate_training_batch, create_eval_transform, load_jsonl
 from student.metrics import build_prediction_record, compute_multitask_metrics, tune_binary_threshold
+from student.model import GraffitiStudentModel, StudentModelConfig
 from student.trainer import evaluate_model
 
 
@@ -84,7 +86,13 @@ def load_rows_and_dataset(model_dir: Path, manifest: Path):
 
 
 def materialize_model_for_export(model_dir: Path) -> nn.Module:
-    model, _, _ = load_student_bundle(model_dir.resolve(), torch.device("cpu"))
+    student_config = StudentModelConfig.from_dict(
+        json.loads((model_dir / "student_config.json").read_text(encoding="utf-8"))
+    )
+    student_config.attn_implementation = "eager"
+    model = GraffitiStudentModel(student_config, load_pretrained_backbone=False)
+    state_dict = load_file(str(model_dir / "model.safetensors"))
+    model.load_state_dict(state_dict)
     model = model.cpu().eval()
     backbone = getattr(model, "backbone", None)
     if backbone is not None and hasattr(backbone, "merge_and_unload"):
