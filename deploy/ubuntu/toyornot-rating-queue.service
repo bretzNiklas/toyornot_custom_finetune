@@ -1,0 +1,16 @@
+[Unit]
+Description=ToyOrNot Event-Driven Rating Queue Worker
+After=network-online.target graffiti-student.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=niklas
+WorkingDirectory=/home/niklas/toyornot_custom_finetune
+EnvironmentFile=/home/niklas/toyornot_custom_finetune/.env.local
+ExecStart=/home/niklas/toyornot_custom_finetune/.venv/bin/python -m deploy.rating_queue_worker
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
