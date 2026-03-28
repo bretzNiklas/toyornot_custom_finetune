@@ -29,25 +29,12 @@ jobs:
         run: python -m unittest tests.test_local_api tests.test_sync_model_artifact
 
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, graffiti-deploy]
     timeout-minutes: 20
     needs: test
     env:
       DEPLOY_APP_DIR: /home/niklas/toyornot_custom_finetune
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
     steps:
-      - name: Configure SSH
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
-
       - name: Deploy commit to production
         run: |
-          PORT="${DEPLOY_PORT:-22}"
-          ssh -i ~/.ssh/id_ed25519 -p "${PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "bash '${DEPLOY_APP_DIR}/deploy/ubuntu/deploy_remote.sh' '${GITHUB_SHA}'"
+          bash "${DEPLOY_APP_DIR}/deploy/ubuntu/deploy_remote.sh" "${GITHUB_SHA}"
