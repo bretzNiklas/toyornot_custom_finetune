@@ -122,15 +122,27 @@ restart_service
 AUTH_TOKEN="${AUTH_TOKEN}" HEALTHCHECK_URL="${HEALTHCHECK_URL}" "${VENV_DIR}/bin/python" - <<'PY'
 import json
 import os
+import time
 import urllib.request
+import urllib.error
 
 request = urllib.request.Request(
     os.environ["HEALTHCHECK_URL"],
     headers={"Authorization": f"Bearer {os.environ['AUTH_TOKEN']}"},
 )
-with urllib.request.urlopen(request, timeout=30) as response:
-    payload = json.load(response)
-if payload.get("status") != "ok":
-    raise SystemExit(f"Health check failed: {payload}")
-print(json.dumps(payload))
+
+last_error = None
+for _ in range(30):
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+        if payload.get("status") != "ok":
+            raise SystemExit(f"Health check failed: {payload}")
+        print(json.dumps(payload))
+        raise SystemExit(0)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        last_error = exc
+        time.sleep(1)
+
+raise SystemExit(f"Health check did not succeed after retries: {last_error}")
 PY
