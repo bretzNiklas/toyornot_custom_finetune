@@ -23,7 +23,7 @@ The live deployment uses:
 - public exposure: Cloudflare named tunnel
 - public API hostname: `https://api.piecerate.me`
 - caller: backend/server code only
-- deployment flow: GitHub push -> GitHub Actions -> SSH -> `deploy_remote.sh`
+- deployment flow: GitHub push -> self-hosted GitHub Actions runner on `niklasserver` -> `deploy_remote.sh`
 
 The supported runtime path is direct synchronous inference through `POST /predict`.
 
@@ -73,7 +73,7 @@ Locked human test metrics for the deployed model:
 The deployed model bundle is stored at:
 
 ```text
-/srv/graffiti-student/models/student-v2-dinov2
+/home/niklas/toyornot_custom_finetune/models/dinov2_base_224
 ```
 
 It was downloaded from the private Hugging Face repo:
@@ -87,66 +87,63 @@ qwertzniki/graffiti-student-dinov2-base-224
 The API app runs from:
 
 ```text
-/srv/graffiti-student/app
+/home/niklas/toyornot_custom_finetune
 ```
 
 The Python environment is:
 
 ```text
-/srv/graffiti-student/venv
+/home/niklas/toyornot_custom_finetune/.venv
 ```
 
 The runtime environment file is:
 
 ```text
-/etc/graffiti-student.env
+/home/niklas/toyornot_custom_finetune/.env.local
 ```
 
 Expected contents:
 
 ```env
 AUTH_TOKEN=replace_with_real_secret
-HF_TOKEN=hf_token_with_private_model_access
 MODEL_REPO_ID=qwertzniki/graffiti-student-dinov2-base-224
 MODEL_REVISION=main
 MODEL_VERSION=student-v2-dinov2
-MODEL_ROOT=/srv/graffiti-student/models
-MODEL_DIR=/srv/graffiti-student/models/student-v2-dinov2
+MODEL_DIR=/home/niklas/toyornot_custom_finetune/models/dinov2_base_224
 ```
 
-Recommended file ownership:
+Optional:
 
 ```text
-root:graffiti 0640 /etc/graffiti-student.env
+HF_TOKEN=<token with access to the private model repo>
 ```
 
 ## Deployment Automation
 
 Production deploys are now pull-based.
 
-GitHub Actions triggers on pushes to `main`, runs the local API tests, then SSHes into the Ubuntu host and invokes:
+GitHub Actions triggers on pushes to `main`, runs the local API tests on a hosted runner, then schedules the deploy job onto a self-hosted runner installed on the Ubuntu host. That runner invokes:
 
 ```bash
-bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh <commit-sha>
+bash /home/niklas/toyornot_custom_finetune/deploy/ubuntu/deploy_remote.sh <commit-sha>
 ```
 
-The remote deploy script:
+The local deploy script on the server:
 
 1. fetches `origin`
 2. checks out the exact pushed commit SHA
-3. creates or reuses `/srv/graffiti-student/venv`
+3. creates or reuses `/home/niklas/toyornot_custom_finetune/.venv`
 4. installs `requirements-serve.txt`
 5. refreshes the pinned Hugging Face bundle only when `MODEL_REPO_ID` or `MODEL_REVISION` changed
 6. restarts `graffiti-student`
 7. runs an authenticated local `/health` smoke test
 
-GitHub Actions secrets required:
+The deploy runner must expose the labels:
 
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_PORT`
-- `DEPLOY_SSH_PRIVATE_KEY`
-- `DEPLOY_KNOWN_HOSTS`
+- `self-hosted`
+- `linux`
+- `x64`
+- `graffiti-deploy`
 
 ## Local API
 
@@ -179,9 +176,7 @@ graffiti-student
 Useful commands:
 
 ```bash
-sudo systemctl status graffiti-student --no-pager
-sudo systemctl restart graffiti-student
-sudo systemctl daemon-reload
+systemctl status graffiti-student --no-pager
 journalctl -u graffiti-student -n 100 -l --no-pager
 ```
 
@@ -347,7 +342,7 @@ journalctl -u graffiti-student -n 100 -l --no-pager
 Check the GitHub Actions run first, then rerun the server-side script manually if needed:
 
 ```bash
-sudo -u graffiti bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh "$(git -C /srv/graffiti-student/app rev-parse HEAD)"
+bash /home/niklas/toyornot_custom_finetune/deploy/ubuntu/deploy_remote.sh "$(git -C /home/niklas/toyornot_custom_finetune rev-parse HEAD)"
 ```
 
 ### Cloudflare tunnel issue
