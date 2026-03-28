@@ -170,8 +170,17 @@ The live production path is:
 - reverse proxy: nginx
 - public exposure: Cloudflare named tunnel
 - public hostname: `https://api.piecerate.me`
+- deployment flow: GitHub push -> SSH deploy -> server-side `git checkout` + service restart
 
 This replaced the earlier Modal deployment path after benchmarking showed the local CPU host was fast enough and dramatically cheaper.
+
+The supported integration path is direct and synchronous:
+
+1. frontend uploads an image to your backend
+2. your backend sends `POST /predict` with `image_b64`
+3. the API returns the rating JSON immediately
+
+This repo does not include an async rating queue or status-polling layer anymore.
 
 Measured local CPU inference on the production host:
 
@@ -209,6 +218,10 @@ High-signal files and directories:
   Data prep, conversion, training, evaluation, and packaging scripts
 - [deploy/local_api.py](C:/Users/qwert/Desktop/custom_model/deploy/local_api.py)  
   Local Ubuntu API entrypoint
+- [deploy/ubuntu/deploy_remote.sh](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/deploy_remote.sh)  
+  Server-side pull deploy script invoked by GitHub Actions
+- [.github/workflows/deploy-production.yml](C:/Users/qwert/Desktop/custom_model/.github/workflows/deploy-production.yml)  
+  Production deploy pipeline for pushes to `main`
 - [api_spec.md](C:/Users/qwert/Desktop/custom_model/api_spec.md)  
   API contract for frontend/backend integration
 
@@ -228,9 +241,9 @@ At a high level:
 
 Operational docs:
 
-- [student_cloud_workflow.md](C:/Users/qwert/Desktop/custom_model/student_cloud_workflow.md)
 - [modal_deployment.md](C:/Users/qwert/Desktop/custom_model/modal_deployment.md)
 - [deploy_local_ubuntu.md](C:/Users/qwert/Desktop/custom_model/deploy_local_ubuntu.md)
+- [production_setup_reference.md](C:/Users/qwert/Desktop/custom_model/production_setup_reference.md)
 - [api_spec.md](C:/Users/qwert/Desktop/custom_model/api_spec.md)
 
 ## Limitations

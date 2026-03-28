@@ -7,7 +7,7 @@ It is intended as the single reference for:
 - where the model runs
 - how the API is served
 - how the public hostname is exposed
-- how Vercel should call it
+- how backend callers should use it
 - what to check when something breaks
 
 ## Current Architecture
@@ -19,13 +19,13 @@ The live deployment uses:
 - model: `student-v2-dinov2`
 - backbone: `facebook/dinov2-base`
 - local app server: FastAPI + uvicorn
-- local queue worker: Python + systemd + `pgmq` + Postgres `LISTEN/NOTIFY`
 - local reverse proxy: nginx
 - public exposure: Cloudflare named tunnel
 - public API hostname: `https://api.piecerate.me`
-- caller: Vercel backend only
+- caller: backend/server code only
+- deployment flow: GitHub push -> GitHub Actions -> SSH -> `deploy_remote.sh`
 
-This replaced the earlier Modal deployment path because the local CPU host was fast enough and much cheaper.
+The supported runtime path is direct synchronous inference through `POST /predict`.
 
 ## Performance
 
@@ -53,8 +53,14 @@ Locked human test metrics for the deployed model:
   Public API application
 - [deploy/ubuntu/graffiti-student.service](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/graffiti-student.service)  
   systemd unit for the API
+- [deploy/ubuntu/deploy_remote.sh](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/deploy_remote.sh)  
+  server-side deploy script for exact-commit pull deploys
+- [deploy/ubuntu/sync_model_artifact.py](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/sync_model_artifact.py)  
+  helper that refreshes the pinned Hugging Face model bundle only when metadata changes
 - [deploy/ubuntu/nginx-graffiti-student.conf](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/nginx-graffiti-student.conf)  
   nginx reverse proxy config
+- [.github/workflows/deploy-production.yml](C:/Users/qwert/Desktop/custom_model/.github/workflows/deploy-production.yml)  
+  CI job that tests and deploys pushes to `main`
 - [api_spec.md](C:/Users/qwert/Desktop/custom_model/api_spec.md)  
   API contract
 - [deploy_local_ubuntu.md](C:/Users/qwert/Desktop/custom_model/deploy_local_ubuntu.md)  
@@ -67,7 +73,7 @@ Locked human test metrics for the deployed model:
 The deployed model bundle is stored at:
 
 ```text
-/home/niklas/toyornot_custom_finetune/models/dinov2_base_224
+/srv/graffiti-student/models/student-v2-dinov2
 ```
 
 It was downloaded from the private Hugging Face repo:
@@ -81,42 +87,66 @@ qwertzniki/graffiti-student-dinov2-base-224
 The API app runs from:
 
 ```text
-/home/niklas/toyornot_custom_finetune
+/srv/graffiti-student/app
 ```
 
 The Python environment is:
 
 ```text
-/home/niklas/toyornot_custom_finetune/.venv
+/srv/graffiti-student/venv
 ```
 
 The runtime environment file is:
 
 ```text
-/home/niklas/toyornot_custom_finetune/.env.local
+/etc/graffiti-student.env
 ```
 
 Expected contents:
 
 ```env
 AUTH_TOKEN=replace_with_real_secret
+HF_TOKEN=hf_token_with_private_model_access
+MODEL_REPO_ID=qwertzniki/graffiti-student-dinov2-base-224
+MODEL_REVISION=main
 MODEL_VERSION=student-v2-dinov2
-MODEL_DIR=/home/niklas/toyornot_custom_finetune/models/dinov2_base_224
-SUPABASE_DB_URL=postgresql://postgres.your-project:password@db.your-project.supabase.co:5432/postgres
-# Or use a Supavisor session pooler URL for the worker:
-# SUPABASE_SESSION_POOLER_URL=postgresql://postgres.your-project:password@aws-0-region.pooler.supabase.com:5432/postgres
-RATING_QUEUE_NAME=rating_dispatch
-RATING_QUEUE_NOTIFY_CHANNEL=rating_queue_wakeup
-RATING_QUEUE_BATCH_SIZE=25
-RATING_QUEUE_VISIBILITY_TIMEOUT_SECONDS=300
-RATING_QUEUE_STALE_AFTER_SECONDS=300
-RATING_QUEUE_IDLE_RECONCILE_SECONDS=300
-RATING_QUEUE_MAX_RETRIES=3
-GRAFFITI_API_URL=http://127.0.0.1:8000
-GRAFFITI_API_TOKEN=replace_with_same_value_as_AUTH_TOKEN
+MODEL_ROOT=/srv/graffiti-student/models
+MODEL_DIR=/srv/graffiti-student/models/student-v2-dinov2
 ```
 
-Use a direct Postgres connection or a Supavisor session pooler connection. Do not use the transaction pooler for the worker because `LISTEN/NOTIFY` needs a persistent session.
+Recommended file ownership:
+
+```text
+root:graffiti 0640 /etc/graffiti-student.env
+```
+
+## Deployment Automation
+
+Production deploys are now pull-based.
+
+GitHub Actions triggers on pushes to `main`, runs the local API tests, then SSHes into the Ubuntu host and invokes:
+
+```bash
+bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh <commit-sha>
+```
+
+The remote deploy script:
+
+1. fetches `origin`
+2. checks out the exact pushed commit SHA
+3. creates or reuses `/srv/graffiti-student/venv`
+4. installs `requirements-serve.txt`
+5. refreshes the pinned Hugging Face bundle only when `MODEL_REPO_ID` or `MODEL_REVISION` changed
+6. restarts `graffiti-student`
+7. runs an authenticated local `/health` smoke test
+
+GitHub Actions secrets required:
+
+- `DEPLOY_HOST`
+- `DEPLOY_USER`
+- `DEPLOY_PORT`
+- `DEPLOY_SSH_PRIVATE_KEY`
+- `DEPLOY_KNOWN_HOSTS`
 
 ## Local API
 
@@ -136,7 +166,7 @@ The API requires:
 Authorization: Bearer <AUTH_TOKEN>
 ```
 
-## systemd Services
+## Services
 
 ### Graffiti API
 
@@ -151,23 +181,18 @@ Useful commands:
 ```bash
 sudo systemctl status graffiti-student --no-pager
 sudo systemctl restart graffiti-student
+sudo systemctl daemon-reload
 journalctl -u graffiti-student -n 100 -l --no-pager
 ```
 
-### Rating Queue Worker
-
-Service name:
-
-```text
-toyornot-rating-queue
-```
+### nginx
 
 Useful commands:
 
 ```bash
-sudo systemctl status toyornot-rating-queue --no-pager
-sudo systemctl restart toyornot-rating-queue
-journalctl -u toyornot-rating-queue -n 100 -l --no-pager
+sudo nginx -t
+sudo systemctl status nginx --no-pager
+sudo systemctl restart nginx
 ```
 
 ### Cloudflare Tunnel
@@ -266,9 +291,9 @@ Example predict payload:
 }
 ```
 
-## Vercel Integration
+## Backend Integration
 
-These environment variables should exist in Vercel backend/server environments:
+These environment variables should exist in backend/server environments that call the API:
 
 ```env
 GRAFFITI_API_URL=https://api.piecerate.me
@@ -279,26 +304,18 @@ Important:
 
 - the browser should not call `api.piecerate.me` directly with the secret
 - only backend/server code should call the API
-- Vercel keeps `/api/rate` and `/api/rate-status`; Ubuntu owns the always-on queue worker and queued score-log persistence
+- callers should send one request to `POST /predict` and use the returned rating JSON directly
 
 ## End-To-End Request Flow
 
-1. User uploads image to the app.
-2. Frontend sends image to Vercel backend.
-3. Vercel backend converts it to base64 if needed.
-4. Vercel backend calls `POST https://api.piecerate.me/predict`.
+1. User uploads an image to the app.
+2. Frontend sends the image to backend/server code.
+3. The backend converts it to base64 if needed.
+4. The backend calls `POST https://api.piecerate.me/predict`.
 5. Cloudflare routes traffic through the named tunnel.
 6. nginx forwards the request to the local FastAPI service.
 7. FastAPI loads the DINOv2 model and returns the structured result.
-8. Vercel backend returns a sanitized response to the frontend.
-
-Async queue flow:
-
-1. ToyOrNot Vercel `/api/rate` calls `public.enqueue_rating_job(...)`.
-2. The enqueue RPC inserts one `public.rating_jobs` row, sends one `pgmq` message to `rating_dispatch`, and issues `pg_notify('rating_queue_wakeup', jobId)`.
-3. Ubuntu `toyornot-rating-queue` wakes on `LISTEN rating_queue_wakeup` or on the idle reconcile timeout, then drains `pgmq.read('rating_dispatch', ...)` in batches.
-4. For each message, the worker claims the referenced row through `public.claim_rating_job(...)`, calls `POST http://127.0.0.1:8000/predict`, and completes the row through `public.complete_rating_job(...)`, which also inserts exactly one `rating_scores` score-log row linked by `source_job_id`.
-5. ToyOrNot Vercel `/api/rate-status` still polls `public.rating_jobs` by owner and returns the final state to the frontend.
+8. The backend returns a sanitized response to the frontend.
 
 ## Troubleshooting
 
@@ -325,26 +342,13 @@ sudo systemctl status graffiti-student --no-pager
 journalctl -u graffiti-student -n 100 -l --no-pager
 ```
 
-### Queue worker issue
+### Deploy workflow issue
+
+Check the GitHub Actions run first, then rerun the server-side script manually if needed:
 
 ```bash
-sudo systemctl status toyornot-rating-queue --no-pager
-journalctl -u toyornot-rating-queue -n 100 -l --no-pager
+sudo -u graffiti bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh "$(git -C /srv/graffiti-student/app rev-parse HEAD)"
 ```
-
-If queue rows stay in `queued`, check that:
-
-- `SUPABASE_DB_URL` or `SUPABASE_SESSION_POOLER_URL` is set
-- `pgmq` is enabled
-- `public.rating_jobs`, `public.enqueue_rating_job(...)`, `public.claim_rating_job(...)`, and `public.complete_rating_job(...)` exist
-- the worker can hold a persistent session and is not using a transaction pooler
-- `graffiti-student` is healthy on `127.0.0.1:8000`
-
-If the worker is healthy but slow to pick up work, check:
-
-- `LISTEN rating_queue_wakeup` is active
-- new rows are inserting messages into `pgmq.q_rating_dispatch`
-- idle logs do not show the old 1 Hz `PATCH/POST` claim loop
 
 ### Cloudflare tunnel issue
 
@@ -375,7 +379,6 @@ If the server is in a bad state, restart in this order:
 
 ```bash
 sudo systemctl restart graffiti-student
-sudo systemctl restart toyornot-rating-queue
 sudo systemctl restart nginx
 sudo systemctl restart cloudflared
 ```
@@ -391,5 +394,5 @@ curl -H "Authorization: Bearer <AUTH_TOKEN>" https://api.piecerate.me/health
 - This setup intentionally avoids recurring GPU hosting cost.
 - The current local CPU host is good enough for production at the current scale.
 - The API should be treated as a backend-only service.
-- The Ubuntu host now owns the always-on queue worker; ToyOrNot should not run its own `worker:rating-queue` daemon.
+- The supported integration path is direct synchronous `POST /predict`.
 - The strongest production outputs are `image_usable` and `overall_score`.

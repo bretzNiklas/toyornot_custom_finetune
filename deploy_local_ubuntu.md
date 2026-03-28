@@ -6,6 +6,9 @@ This deploys the winning `student-v2-dinov2` model on a local Ubuntu box using:
 - uvicorn
 - systemd
 - nginx
+- a GitHub Actions push-to-deploy workflow
+
+The supported runtime flow remains direct synchronous inference through `POST /predict`.
 
 ## 1. System packages
 
@@ -14,160 +17,142 @@ sudo apt update
 sudo apt install -y git python3 python3-venv python3-pip nginx
 ```
 
-## 2. Clone and install
+## 2. Create the dedicated server layout
+
+Create a dedicated user that owns the runtime files and receives GitHub Actions SSH deploys:
 
 ```bash
-git clone https://github.com/bretzNiklas/toyornot_custom_finetune.git
-cd toyornot_custom_finetune
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements-serve.txt
+sudo useradd --create-home --home-dir /srv/graffiti-student --shell /bin/bash graffiti
+sudo install -d -o graffiti -g graffiti /srv/graffiti-student/app
+sudo install -d -o graffiti -g graffiti /srv/graffiti-student/models
 ```
 
-## 3. Download the model bundle
-
-Export a Hugging Face token with access to the private model repo:
+Clone the repo into the fixed app path:
 
 ```bash
-export HF_TOKEN=your_hf_token_here
+sudo -u graffiti git clone https://github.com/bretzNiklas/toyornot_custom_finetune.git /srv/graffiti-student/app
 ```
 
-Then download the model:
+The standardized production layout is:
 
-```bash
-python - <<'PY'
-import os
-from huggingface_hub import snapshot_download
-
-snapshot_download(
-    repo_id="qwertzniki/graffiti-student-dinov2-base-224",
-    repo_type="model",
-    local_dir="models/dinov2_base_224",
-    token=os.environ["HF_TOKEN"],
-)
-print("Downloaded model to models/dinov2_base_224")
-PY
+```text
+/srv/graffiti-student/app
+/srv/graffiti-student/venv
+/srv/graffiti-student/models/<model_version>
+/etc/graffiti-student.env
 ```
 
-## 4. Local env file
+## 3. Create the runtime env file
 
-Create `.env.local` in the repo root:
+Copy the example and edit it:
 
 ```bash
-cat > .env.local <<'EOF'
+sudo cp /srv/graffiti-student/app/deploy/ubuntu/graffiti-student.env.example /etc/graffiti-student.env
+sudo chown root:graffiti /etc/graffiti-student.env
+sudo chmod 640 /etc/graffiti-student.env
+sudoedit /etc/graffiti-student.env
+```
+
+Expected fields:
+
+```env
 AUTH_TOKEN=replace_with_your_secret_token
+HF_TOKEN=hf_token_with_access_to_the_private_model_repo
+MODEL_REPO_ID=qwertzniki/graffiti-student-dinov2-base-224
+MODEL_REVISION=main
 MODEL_VERSION=student-v2-dinov2
-MODEL_DIR=/home/niklas/toyornot_custom_finetune/models/dinov2_base_224
-SUPABASE_DB_URL=postgresql://postgres.your-project:password@db.your-project.supabase.co:5432/postgres
-# Optional: use a Supavisor session pooler URL instead of the direct DB URL for the worker.
-# SUPABASE_SESSION_POOLER_URL=postgresql://postgres.your-project:password@aws-0-region.pooler.supabase.com:5432/postgres
-RATING_QUEUE_NAME=rating_dispatch
-RATING_QUEUE_NOTIFY_CHANNEL=rating_queue_wakeup
-RATING_QUEUE_BATCH_SIZE=25
-RATING_QUEUE_VISIBILITY_TIMEOUT_SECONDS=300
-RATING_QUEUE_STALE_AFTER_SECONDS=300
-RATING_QUEUE_IDLE_RECONCILE_SECONDS=300
-RATING_QUEUE_MAX_RETRIES=3
-GRAFFITI_API_URL=http://127.0.0.1:8000
-GRAFFITI_API_TOKEN=replace_with_same_value_as_AUTH_TOKEN
-EOF
+MODEL_ROOT=/srv/graffiti-student/models
+MODEL_DIR=/srv/graffiti-student/models/student-v2-dinov2
 ```
 
-If `GRAFFITI_API_TOKEN` is omitted, the worker falls back to `AUTH_TOKEN`.
-Use a direct Postgres URL or a Supavisor session pooler URL. Do not use the transaction pooler for the always-on worker because `LISTEN/NOTIFY` requires a persistent session.
+`AUTH_TOKEN` is used by the API and the post-deploy smoke test.  
+`HF_TOKEN` is used by the server-side deploy script to pull the model bundle only when the pinned repo or revision changes.
 
-## 4b. Supabase queue bootstrap
-
-The Ubuntu worker now uses:
-
-- `public.rating_jobs` as the durable status table for Vercel `/api/rate-status`
-- `public.complete_rating_job(...)` to atomically mark queued jobs completed and persist one `rating_scores` score-log row
-- `pgmq` queue `rating_dispatch` for delivery, retries, and visibility timeouts
-- `LISTEN/NOTIFY` on `rating_queue_wakeup` so the worker is event-driven when new jobs arrive
-
-Apply [scripts/supabase-rating-jobs.sql](C:/Users/qwert/Desktop/custom_model/scripts/supabase-rating-jobs.sql)
-to create or update:
-
-- `public.rating_jobs`
-- `public.rating_jobs.score_log_persisted_at`
-- `public.rating_scores.source_job_id`
-- `public.enqueue_rating_job(...)`
-- `public.complete_rating_job(...)`
-- `public.claim_rating_job(...)`
-- `public.claim_next_rating_job()` as a temporary rollback helper
-- `pgmq` queue `rating_dispatch`
-
-If you are migrating from the old poller, apply the SQL during a quiet window or after the old worker is stopped so no new rows are left without a queue message.
-Apply the base `rating_scores` table migration before this queue script because `public.complete_rating_job(...)` inserts queued score-log rows there.
-
-## 5. Smoke test without systemd
-
-Run:
+## 4. Install the systemd service
 
 ```bash
-source .venv/bin/activate
-set -a
-source .env.local
-set +a
-uvicorn deploy.local_api:app --host 127.0.0.1 --port 8000
-```
-
-In another shell:
-
-```bash
-curl -H "Authorization: Bearer replace_with_your_secret_token" http://127.0.0.1:8000/health
-```
-
-## 6. systemd service
-
-Copy the provided unit:
-
-```bash
-sudo cp deploy/ubuntu/graffiti-student.service /etc/systemd/system/graffiti-student.service
+sudo cp /srv/graffiti-student/app/deploy/ubuntu/graffiti-student.service /etc/systemd/system/graffiti-student.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now graffiti-student
-sudo systemctl status graffiti-student
+sudo systemctl enable graffiti-student
 ```
 
-If your Linux username is not `niklas`, edit the unit file first.
+The unit expects:
 
-## 6b. Queue worker systemd service
+- app checkout: `/srv/graffiti-student/app`
+- venv: `/srv/graffiti-student/venv`
+- env file: `/etc/graffiti-student.env`
+- service user: `graffiti`
 
-Copy the worker unit and start it:
-
-```bash
-sudo cp deploy/ubuntu/toyornot-rating-queue.service /etc/systemd/system/toyornot-rating-queue.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now toyornot-rating-queue
-sudo systemctl status toyornot-rating-queue
-```
-
-Useful logs:
+## 5. Install nginx
 
 ```bash
-journalctl -u toyornot-rating-queue -n 100 -l --no-pager
-```
-
-The worker opens two persistent Postgres sessions:
-
-- one dedicated `LISTEN rating_queue_wakeup`
-- one for `pgmq.read()`, job claims, and atomic completion writes
-
-An idle worker should not emit a `PATCH/POST` loop every second anymore. It will sleep until a `NOTIFY`, then drain the queue in batches.
-
-## 7. nginx reverse proxy
-
-```bash
-sudo cp deploy/ubuntu/nginx-graffiti-student.conf /etc/nginx/sites-available/graffiti-student
+sudo cp /srv/graffiti-student/app/deploy/ubuntu/nginx-graffiti-student.conf /etc/nginx/sites-available/graffiti-student
 sudo ln -sf /etc/nginx/sites-available/graffiti-student /etc/nginx/sites-enabled/graffiti-student
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Now the API is reachable on port `80` on the machine.
+Now the API is reachable on local port `80` on the machine.
 
-## 8. API
+## 6. Verify one manual deploy on the server
+
+Run the repo-tracked deploy script once before enabling GitHub Actions:
+
+```bash
+sudo -u graffiti bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh "$(git -C /srv/graffiti-student/app rev-parse HEAD)"
+```
+
+This will:
+
+- fetch the repo
+- checkout the exact commit
+- create `/srv/graffiti-student/venv` if missing
+- install `requirements-serve.txt`
+- pull the pinned Hugging Face model into `MODEL_DIR` if needed
+- restart `graffiti-student`
+- run an authenticated `http://127.0.0.1:8000/health` smoke test
+
+Useful logs:
+
+```bash
+journalctl -u graffiti-student -n 100 -l --no-pager
+```
+
+## 7. Wire GitHub Actions deploy access
+
+Generate a deploy key pair for the `graffiti` user and add the public key to `~graffiti/.ssh/authorized_keys`.
+
+GitHub Actions secrets required by [.github/workflows/deploy-production.yml](C:/Users/qwert/Desktop/custom_model/.github/workflows/deploy-production.yml):
+
+- `DEPLOY_HOST`
+- `DEPLOY_USER`
+- `DEPLOY_PORT`
+- `DEPLOY_SSH_PRIVATE_KEY`
+- `DEPLOY_KNOWN_HOSTS`
+
+The SSH user must be able to:
+
+- read `/etc/graffiti-student.env`
+- write under `/srv/graffiti-student`
+- run `sudo systemctl daemon-reload`
+- run `sudo systemctl restart graffiti-student`
+- run `sudo systemctl status graffiti-student`
+- run `sudo journalctl -u graffiti-student`
+
+If you use the same `graffiti` account for SSH and the service, give it passwordless sudo for those commands only.
+
+## 8. GitHub Actions deploy flow
+
+Pushes to `main` now do the following:
+
+1. Run `python -m unittest tests.test_local_api tests.test_sync_model_artifact`
+2. SSH into the Ubuntu box
+3. Invoke `bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh <commit-sha>`
+4. Fail the workflow if the service restart or health check fails
+
+This replaces manual `scp` deployments with a pull-based deploy that always checks out the exact pushed commit.
+
+## 9. API contract
 
 Endpoints:
 
@@ -190,32 +175,29 @@ Prediction body:
 }
 ```
 
-## 9. Queue verification
+The response returns the rating JSON immediately, including:
 
-Local health:
+- `image_usable`
+- `medium`
+- `overall_score`
+- rubric subscores
+- `request_id`
+- `model_version`
 
-```bash
-curl -H "Authorization: Bearer <AUTH_TOKEN>" http://127.0.0.1:8000/health
+## 10. Backend integration
+
+Recommended application flow:
+
+1. Frontend uploads the image to your backend.
+2. Your backend converts the file to base64.
+3. Your backend calls `POST /predict` on this Ubuntu-hosted API.
+4. Your backend returns a sanitized response to the frontend.
+
+If your backend is deployed separately, give it its own caller-side environment variables such as:
+
+```env
+GRAFFITI_API_URL=https://api.piecerate.me
+GRAFFITI_API_TOKEN=<AUTH_TOKEN>
 ```
 
-Then verify the async flow end to end:
-
-1. Submit one rating through the existing ToyOrNot Vercel `/api/rate` route.
-2. Confirm a new row appears in `public.rating_jobs`.
-3. Confirm the row was created by `public.enqueue_rating_job(...)` and a message exists in `pgmq.q_rating_dispatch`.
-4. Watch the row move `queued -> processing -> completed` or `failed`.
-5. Confirm `public.rating_jobs.score_log_persisted_at` is set and one `public.rating_scores` row appears with `source_job_id = public.rating_jobs.id`.
-6. Confirm ToyOrNot `/api/rate-status` returns the final payload.
-7. Leave the worker idle and confirm the old 1 Hz Supabase polling loop is gone from the journal.
-
-The Ubuntu worker does not add any new public endpoint. ToyOrNot keeps enqueue and status polling; the Ubuntu box owns the always-on worker loop and queued `rating_scores` persistence.
-
-## 10. Migration note
-
-ToyOrNot should not run any separate `worker:rating-queue` daemon from the Vercel-side codebase.
-
-Keep the Vercel `/api/rate` and `/api/rate-status` handlers unchanged, but run the always-on queue worker only through the Ubuntu systemd service:
-
-```bash
-sudo systemctl status toyornot-rating-queue
-```
+Keep the bearer token on the backend only.

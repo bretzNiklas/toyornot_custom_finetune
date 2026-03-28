@@ -27,7 +27,7 @@ MIN_DIMENSION = 32
 MAX_DIMENSION = 8192
 
 logger = logging.getLogger("graffiti_student_modal")
-auth_scheme = HTTPBearer()
+auth_scheme = HTTPBearer(auto_error=False)
 
 
 image = (
@@ -56,12 +56,17 @@ class PredictionRequest(BaseModel):
     include_debug: bool = False
 
 
-def authorize(token: HTTPAuthorizationCredentials = Depends(auth_scheme)) -> str:
+def authorize(token: HTTPAuthorizationCredentials | None = Depends(auth_scheme)) -> str:
     expected = os.environ.get("AUTH_TOKEN")
     if not expected:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Server auth is not configured.",
+        )
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authenticated",
         )
     if token.credentials != expected:
         raise HTTPException(

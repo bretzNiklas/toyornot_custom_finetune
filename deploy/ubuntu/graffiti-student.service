@@ -1,13 +1,16 @@
 [Unit]
 Description=Graffiti Student Local API
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
-User=niklas
-WorkingDirectory=/home/niklas/toyornot_custom_finetune
-EnvironmentFile=/home/niklas/toyornot_custom_finetune/.env.local
-ExecStart=/home/niklas/toyornot_custom_finetune/.venv/bin/uvicorn deploy.local_api:app --host 127.0.0.1 --port 8000 --workers 1
+User=graffiti
+Group=graffiti
+WorkingDirectory=/srv/graffiti-student/app
+EnvironmentFile=/etc/graffiti-student.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/graffiti-student/venv/bin/uvicorn deploy.local_api:app --host 127.0.0.1 --port 8000 --workers 1
 Restart=always
 RestartSec=3
 
