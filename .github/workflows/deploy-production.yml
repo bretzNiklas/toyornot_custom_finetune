@@ -35,12 +35,12 @@ jobs:
     steps:
       - name: Deploy commit to production
         run: |
-          if [ -x /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh ]; then
+          if [ -f /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh ]; then
             export APP_DIR=/srv/graffiti-student/app
             export VENV_DIR=/srv/graffiti-student/venv
             export ENV_FILE=/etc/graffiti-student.env
             export MODEL_ROOT=/srv/graffiti-student/models
-          elif [ -x /home/niklas/toyornot_custom_finetune/deploy/ubuntu/deploy_remote.sh ]; then
+          elif [ -f /home/niklas/toyornot_custom_finetune/deploy/ubuntu/deploy_remote.sh ]; then
             export APP_DIR=/home/niklas/toyornot_custom_finetune
             export VENV_DIR=/home/niklas/toyornot_custom_finetune/.venv
             export ENV_FILE=/home/niklas/toyornot_custom_finetune/.env.local
@@ -50,4 +50,5 @@ jobs:
             exit 1
           fi
 
+          chmod +x "${APP_DIR}/deploy/ubuntu/deploy_remote.sh"
           bash "${APP_DIR}/deploy/ubuntu/deploy_remote.sh" "${GITHUB_SHA}"
