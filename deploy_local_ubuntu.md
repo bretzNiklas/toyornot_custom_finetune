@@ -6,9 +6,34 @@ This deploys the winning `student-v2-dinov2` model on a local Ubuntu box using:
 - uvicorn
 - systemd
 - nginx
-- a GitHub Actions push-to-deploy workflow
+- a GitHub Actions push-to-deploy workflow backed by a self-hosted runner on the Ubuntu server
 
-The supported runtime flow remains direct synchronous inference through `POST /predict`.
+The supported runtime flow is now a Supabase-to-Piecerate handoff:
+
+1. Vercel `/api/rate` uploads `judgeImage` to Supabase Storage and inserts `public.judge_api_jobs`
+2. `graffiti-judge-handoff-worker` claims the job and calls `POST /predictions`
+3. the worker polls `GET /predictions/{job_id}?wait_ms=8000`, archives the judged image locally, writes `public.judge_api_results`, and finalizes the job row
+
+## One-Line Clean Bootstrap
+
+If you already have a working but messy install and want the clean `/srv/graffiti-student` layout in one step, run this from your Windows machine:
+
+```powershell
+.\scripts\bootstrap_clean_server.ps1
+```
+
+What it does:
+
+- fetches a fresh GitHub Actions runner registration token with `gh`
+- SSHes into `niklas@192.168.178.96`
+- runs the root bootstrap script at [deploy/ubuntu/bootstrap_clean_server.sh](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/bootstrap_clean_server.sh)
+- creates the `/srv/graffiti-student` layout
+- migrates the existing model bundle if found
+- writes `/etc/graffiti-student.env`
+- installs the `graffiti-student` systemd unit and nginx config
+- installs the self-hosted runner as a system service
+
+You still need a sudo-capable account on the Ubuntu box because the clean layout writes into `/srv`, `/etc`, and `/etc/systemd/system`.
 
 ## 1. System packages
 
@@ -19,7 +44,7 @@ sudo apt install -y git python3 python3-venv python3-pip nginx
 
 ## 2. Create the dedicated server layout
 
-Create a dedicated user that owns the runtime files and receives GitHub Actions SSH deploys:
+Create a dedicated user that owns the runtime files and runs the self-hosted GitHub Actions deploy runner:
 
 ```bash
 sudo useradd --create-home --home-dir /srv/graffiti-student --shell /bin/bash graffiti
@@ -68,15 +93,17 @@ MODEL_DIR=/srv/graffiti-student/models/student-v2-dinov2
 `AUTH_TOKEN` is used by the API and the post-deploy smoke test.  
 `HF_TOKEN` is used by the server-side deploy script to pull the model bundle only when the pinned repo or revision changes.
 
-## 4. Install the systemd service
+## 4. Install the systemd services
 
 ```bash
 sudo cp /srv/graffiti-student/app/deploy/ubuntu/graffiti-student.service /etc/systemd/system/graffiti-student.service
+sudo cp /srv/graffiti-student/app/deploy/ubuntu/graffiti-student-worker.service /etc/systemd/system/graffiti-student-worker.service
+sudo cp /srv/graffiti-student/app/deploy/ubuntu/graffiti-judge-handoff-worker.service /etc/systemd/system/graffiti-judge-handoff-worker.service
 sudo systemctl daemon-reload
-sudo systemctl enable graffiti-student
+sudo systemctl enable graffiti-student graffiti-student-worker graffiti-judge-handoff-worker
 ```
 
-The unit expects:
+The units expect:
 
 - app checkout: `/srv/graffiti-student/app`
 - venv: `/srv/graffiti-student/venv`
@@ -109,45 +136,42 @@ This will:
 - create `/srv/graffiti-student/venv` if missing
 - install `requirements-serve.txt`
 - pull the pinned Hugging Face model into `MODEL_DIR` if needed
-- restart `graffiti-student`
+- restart `graffiti-student`, `graffiti-student-worker`, and `graffiti-judge-handoff-worker`
 - run an authenticated `http://127.0.0.1:8000/health` smoke test
 
 Useful logs:
 
 ```bash
 journalctl -u graffiti-student -n 100 -l --no-pager
+journalctl -u graffiti-student-worker -n 100 -l --no-pager
+journalctl -u graffiti-judge-handoff-worker -n 100 -l --no-pager
 ```
 
-## 7. Wire GitHub Actions deploy access
+## 7. Install the self-hosted GitHub Actions runner
 
-Generate a deploy key pair for the `graffiti` user and add the public key to `~graffiti/.ssh/authorized_keys`.
+If your production server is only reachable on a private LAN address, the deploy job must run on a self-hosted GitHub runner installed on that same Ubuntu box.
 
-GitHub Actions secrets required by [.github/workflows/deploy-production.yml](C:/Users/qwert/Desktop/custom_model/.github/workflows/deploy-production.yml):
+High-level setup:
 
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_PORT`
-- `DEPLOY_SSH_PRIVATE_KEY`
-- `DEPLOY_KNOWN_HOSTS`
+1. Download the latest Linux x64 runner from the official `actions/runner` release page.
+2. Configure it against `https://github.com/bretzNiklas/toyornot_custom_finetune`.
+3. Give it the label `graffiti-deploy`.
+4. Keep it running in the background and add an `@reboot` crontab entry or equivalent startup hook.
 
-The SSH user must be able to:
+The workflow in [.github/workflows/deploy-production.yml](C:/Users/qwert/Desktop/custom_model/.github/workflows/deploy-production.yml) now targets:
 
-- read `/etc/graffiti-student.env`
-- write under `/srv/graffiti-student`
-- run `sudo systemctl daemon-reload`
-- run `sudo systemctl restart graffiti-student`
-- run `sudo systemctl status graffiti-student`
-- run `sudo journalctl -u graffiti-student`
-
-If you use the same `graffiti` account for SSH and the service, give it passwordless sudo for those commands only.
+- `self-hosted`
+- `linux`
+- `x64`
+- `graffiti-deploy`
 
 ## 8. GitHub Actions deploy flow
 
 Pushes to `main` now do the following:
 
-1. Run `python -m unittest tests.test_local_api tests.test_sync_model_artifact`
-2. SSH into the Ubuntu box
-3. Invoke `bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh <commit-sha>`
+1. Run `python -m unittest tests.test_local_api tests.test_local_queue tests.test_local_worker tests.test_judge_api_handoff_worker tests.test_sync_model_artifact`
+2. Queue the deploy job on the server's self-hosted runner
+3. Invoke `bash /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh <commit-sha>` locally on that machine
 4. Fail the workflow if the service restart or health check fails
 
 This replaces manual `scp` deployments with a pull-based deploy that always checks out the exact pushed commit.
@@ -157,7 +181,8 @@ This replaces manual `scp` deployments with a pull-based deploy that always chec
 Endpoints:
 
 - `GET /health`
-- `POST /predict`
+- `POST /predictions`
+- `GET /predictions/{job_id}`
 
 Both require:
 
@@ -165,7 +190,7 @@ Both require:
 Authorization: Bearer <AUTH_TOKEN>
 ```
 
-Prediction body:
+Prediction submission body:
 
 ```json
 {
@@ -175,29 +200,25 @@ Prediction body:
 }
 ```
 
-The response returns the rating JSON immediately, including:
+`POST /predictions` returns a queued job payload with `job_id`, `request_id`, `queue_position`, and `poll_url`.
 
-- `image_usable`
-- `medium`
-- `overall_score`
-- rubric subscores
-- `request_id`
-- `model_version`
+`GET /predictions/{job_id}` returns queued state or terminal result/error.
 
 ## 10. Backend integration
 
 Recommended application flow:
 
-1. Frontend uploads the image to your backend.
-2. Your backend converts the file to base64.
-3. Your backend calls `POST /predict` on this Ubuntu-hosted API.
-4. Your backend returns a sanitized response to the frontend.
+1. Vercel `/api/rate` uploads the source image to Supabase Storage.
+2. Vercel inserts a `pending` row into `public.judge_api_jobs`.
+3. `graffiti-judge-handoff-worker` calls `POST /predictions` on this Ubuntu-hosted API.
+4. The worker polls until terminal, writes `public.judge_api_results` with the archived local image reference, and then deletes the transient Supabase upload.
 
 If your backend is deployed separately, give it its own caller-side environment variables such as:
 
 ```env
-GRAFFITI_API_URL=https://api.piecerate.me
-GRAFFITI_API_TOKEN=<AUTH_TOKEN>
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+JUDGE_API_TOKEN=<AUTH_TOKEN>
 ```
 
-Keep the bearer token on the backend only.
+Keep the bearer token and Supabase service role key on the backend or worker only.

@@ -167,20 +167,22 @@ The live production path is:
 
 - model host: local Ubuntu server
 - inference stack: FastAPI + uvicorn
+- internal prediction queue: local SQLite-backed `/predictions` queue plus `graffiti-student-worker`
+- upstream handoff worker: Supabase-backed `graffiti-judge-handoff-worker` that consumes `judge_api_jobs`
 - reverse proxy: nginx
 - public exposure: Cloudflare named tunnel
 - public hostname: `https://api.piecerate.me`
-- deployment flow: GitHub push -> SSH deploy -> server-side `git checkout` + service restart
+- deployment flow: GitHub push -> self-hosted GitHub Actions runner on the server -> server-side `git checkout` + service restart
 
 This replaced the earlier Modal deployment path after benchmarking showed the local CPU host was fast enough and dramatically cheaper.
 
-The supported integration path is direct and synchronous:
+The supported upstream integration path is now a two-step handoff:
 
-1. frontend uploads an image to your backend
-2. your backend sends `POST /predict` with `image_b64`
-3. the API returns the rating JSON immediately
+1. Vercel `/api/rate` uploads `judgeImage` to Supabase Storage and inserts a `pending` row into `public.judge_api_jobs`
+2. the Ubuntu handoff worker claims the job, calls `POST /predictions`, and polls `GET /predictions/{job_id}?wait_ms=8000`
+3. the worker archives the judged image on local disk, writes `public.judge_api_results` with that local image reference, marks the job `completed` or `failed`, and deletes the transient Supabase storage object
 
-This repo does not include an async rating queue or status-polling layer anymore.
+`POST /predict` still exists for internal/manual server use, but it is no longer the supported upstream integration contract.
 
 Measured local CPU inference on the production host:
 
@@ -218,12 +220,16 @@ High-signal files and directories:
   Data prep, conversion, training, evaluation, and packaging scripts
 - [deploy/local_api.py](C:/Users/qwert/Desktop/custom_model/deploy/local_api.py)  
   Local Ubuntu API entrypoint
+- [deploy/judge_api_handoff_worker.py](C:/Users/qwert/Desktop/custom_model/deploy/judge_api_handoff_worker.py)  
+  Supabase-backed handoff worker that calls Piecerate and writes final results
 - [deploy/ubuntu/deploy_remote.sh](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/deploy_remote.sh)  
   Server-side pull deploy script invoked by GitHub Actions
 - [.github/workflows/deploy-production.yml](C:/Users/qwert/Desktop/custom_model/.github/workflows/deploy-production.yml)  
   Production deploy pipeline for pushes to `main`
 - [api_spec.md](C:/Users/qwert/Desktop/custom_model/api_spec.md)  
-  API contract for frontend/backend integration
+  Judge API contract for the Ubuntu handoff worker
+- [judge_api_quick_spec.md](C:/Users/qwert/Desktop/custom_model/judge_api_quick_spec.md)  
+  Short async-first API reference for `/predictions`
 
 ## Reproducing The Pipeline
 

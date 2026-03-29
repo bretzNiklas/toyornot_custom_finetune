@@ -26,7 +26,7 @@ jobs:
           python -m pip install -r requirements-serve.txt
 
       - name: Run deployment safety tests
-        run: python -m unittest tests.test_local_api tests.test_local_queue tests.test_local_worker tests.test_sync_model_artifact
+        run: python -m unittest tests.test_local_api tests.test_local_queue tests.test_local_worker tests.test_judge_api_handoff_worker tests.test_sync_model_artifact
 
   deploy:
     runs-on: [self-hosted, linux, x64, graffiti-deploy]

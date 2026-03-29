@@ -25,7 +25,7 @@ The live deployment uses:
 - caller: backend/server code only
 - deployment flow: GitHub push -> self-hosted GitHub Actions runner on `niklasserver` -> `deploy_remote.sh`
 
-The supported runtime path is direct synchronous inference through `POST /predict`.
+The supported runtime path is a Supabase-to-Piecerate handoff through `POST /predictions`.
 
 ## Performance
 
@@ -51,6 +51,8 @@ Locked human test metrics for the deployed model:
 
 - [deploy/local_api.py](C:/Users/qwert/Desktop/custom_model/deploy/local_api.py)  
   Public API application
+- [deploy/judge_api_handoff_worker.py](C:/Users/qwert/Desktop/custom_model/deploy/judge_api_handoff_worker.py)  
+  Supabase-backed worker that claims `judge_api_jobs` and writes `judge_api_results`
 - [deploy/ubuntu/graffiti-student.service](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/graffiti-student.service)  
   systemd unit for the API
 - [deploy/ubuntu/deploy_remote.sh](C:/Users/qwert/Desktop/custom_model/deploy/ubuntu/deploy_remote.sh)  
@@ -125,8 +127,13 @@ Production deploys are now pull-based.
 GitHub Actions triggers on pushes to `main`, runs the local API tests on a hosted runner, then schedules the deploy job onto a self-hosted runner installed on the Ubuntu host. That runner invokes:
 
 ```bash
-bash /home/niklas/toyornot_custom_finetune/deploy/ubuntu/deploy_remote.sh <commit-sha>
+bash <detected-app-dir>/deploy/ubuntu/deploy_remote.sh <commit-sha>
 ```
+
+The workflow currently supports both of these server layouts:
+
+- `/home/niklas/toyornot_custom_finetune`
+- `/srv/graffiti-student/app`
 
 The local deploy script on the server:
 
@@ -150,12 +157,12 @@ The deploy runner must expose the labels:
 Internal local paths:
 
 - health: `http://127.0.0.1:8000/health`
-- predict: `http://127.0.0.1:8000/predict`
+- create prediction: `http://127.0.0.1:8000/predictions`
 
 nginx proxies public local HTTP:
 
 - `http://127.0.0.1/health`
-- `http://127.0.0.1/predict`
+- `http://127.0.0.1/predictions`
 
 The API requires:
 
@@ -268,7 +275,8 @@ https://api.piecerate.me
 Endpoints:
 
 - `GET /health`
-- `POST /predict`
+- `POST /predictions`
+- `GET /predictions/{job_id}`
 
 Example health test:
 
@@ -288,29 +296,30 @@ Example predict payload:
 
 ## Backend Integration
 
-These environment variables should exist in backend/server environments that call the API:
+These environment variables should exist in the Ubuntu handoff worker environment:
 
 ```env
-GRAFFITI_API_URL=https://api.piecerate.me
-GRAFFITI_API_TOKEN=<AUTH_TOKEN>
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+JUDGE_API_TOKEN=<AUTH_TOKEN>
 ```
 
 Important:
 
 - the browser should not call `api.piecerate.me` directly with the secret
-- only backend/server code should call the API
-- callers should send one request to `POST /predict` and use the returned rating JSON directly
+- Vercel `/api/rate` should upload to Supabase Storage and insert `public.judge_api_jobs`
+- only the Ubuntu handoff worker should call the Judge API and write `public.judge_api_results`
 
 ## End-To-End Request Flow
 
 1. User uploads an image to the app.
 2. Frontend sends the image to backend/server code.
-3. The backend converts it to base64 if needed.
-4. The backend calls `POST https://api.piecerate.me/predict`.
+3. Vercel `/api/rate` uploads the image to Supabase Storage and inserts a `pending` job row.
+4. `graffiti-judge-handoff-worker` claims the row, calls `POST https://api.piecerate.me/predictions`, and polls the job.
 5. Cloudflare routes traffic through the named tunnel.
 6. nginx forwards the request to the local FastAPI service.
-7. FastAPI loads the DINOv2 model and returns the structured result.
-8. The backend returns a sanitized response to the frontend.
+7. FastAPI enqueues the prediction locally, the local worker scores it, and the Judge API returns the terminal payload.
+8. The handoff worker archives the judged image on local disk, writes `public.judge_api_results` with that archive reference, and finalizes the job row.
 
 ## Troubleshooting
 
@@ -374,6 +383,8 @@ If the server is in a bad state, restart in this order:
 
 ```bash
 sudo systemctl restart graffiti-student
+sudo systemctl restart graffiti-student-worker
+sudo systemctl restart graffiti-judge-handoff-worker
 sudo systemctl restart nginx
 sudo systemctl restart cloudflared
 ```
@@ -389,5 +400,5 @@ curl -H "Authorization: Bearer <AUTH_TOKEN>" https://api.piecerate.me/health
 - This setup intentionally avoids recurring GPU hosting cost.
 - The current local CPU host is good enough for production at the current scale.
 - The API should be treated as a backend-only service.
-- The supported integration path is direct synchronous `POST /predict`.
+- The supported integration path is `judge_api_jobs` -> Ubuntu handoff worker -> Judge API `/predictions`.
 - The strongest production outputs are `image_usable` and `overall_score`.

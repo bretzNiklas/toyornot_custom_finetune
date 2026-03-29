@@ -17,9 +17,11 @@ MODEL_ROOT="${MODEL_ROOT:-${APP_DIR}/models}"
 RUNTIME_ROOT="${RUNTIME_ROOT:-${APP_DIR}/runtime}"
 JOBS_DB_PATH="${JOBS_DB_PATH:-${RUNTIME_ROOT}/jobs.sqlite3}"
 JOB_SPOOL_DIR="${JOB_SPOOL_DIR:-${RUNTIME_ROOT}/spool}"
+JUDGED_IMAGE_ARCHIVE_DIR="${JUDGED_IMAGE_ARCHIVE_DIR:-${RUNTIME_ROOT}/judged-images}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 SERVICE_NAME="${SERVICE_NAME:-graffiti-student}"
 WORKER_SERVICE_NAME="${WORKER_SERVICE_NAME:-graffiti-student-worker}"
+HANDOFF_WORKER_SERVICE_NAME="${HANDOFF_WORKER_SERVICE_NAME:-graffiti-judge-handoff-worker}"
 GIT_REMOTE="${GIT_REMOTE:-origin}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health}"
 
@@ -32,13 +34,17 @@ dump_service_logs() {
     if can_sudo; then
         sudo systemctl status "${SERVICE_NAME}" --no-pager || true
         sudo systemctl status "${WORKER_SERVICE_NAME}" --no-pager || true
+        sudo systemctl status "${HANDOFF_WORKER_SERVICE_NAME}" --no-pager || true
         sudo journalctl -u "${SERVICE_NAME}" -n 100 -l --no-pager || true
         sudo journalctl -u "${WORKER_SERVICE_NAME}" -n 100 -l --no-pager || true
+        sudo journalctl -u "${HANDOFF_WORKER_SERVICE_NAME}" -n 100 -l --no-pager || true
     else
         systemctl status "${SERVICE_NAME}" --no-pager || true
         systemctl status "${WORKER_SERVICE_NAME}" --no-pager || true
+        systemctl status "${HANDOFF_WORKER_SERVICE_NAME}" --no-pager || true
         journalctl -u "${SERVICE_NAME}" -n 100 -l --no-pager || true
         journalctl -u "${WORKER_SERVICE_NAME}" -n 100 -l --no-pager || true
+        journalctl -u "${HANDOFF_WORKER_SERVICE_NAME}" -n 100 -l --no-pager || true
     fi
 }
 
@@ -99,7 +105,7 @@ MODEL_REVISION="${MODEL_REVISION:-main}"
 MODEL_DIR="${MODEL_DIR:-${MODEL_ROOT}/${MODEL_VERSION}}"
 export MODEL_DIR MODEL_REPO_ID MODEL_REVISION MODEL_VERSION HF_TOKEN
 
-mkdir -p "${RUNTIME_ROOT}" "${JOB_SPOOL_DIR}"
+mkdir -p "${RUNTIME_ROOT}" "${JOB_SPOOL_DIR}" "${JUDGED_IMAGE_ARCHIVE_DIR}"
 
 mkdir -p "${MODEL_ROOT}"
 
@@ -131,14 +137,17 @@ fi
 if can_sudo; then
     sudo cp "${APP_DIR}/deploy/ubuntu/graffiti-student.service" /etc/systemd/system/graffiti-student.service
     sudo cp "${APP_DIR}/deploy/ubuntu/graffiti-student-worker.service" /etc/systemd/system/graffiti-student-worker.service
+    sudo cp "${APP_DIR}/deploy/ubuntu/graffiti-judge-handoff-worker.service" /etc/systemd/system/graffiti-judge-handoff-worker.service
     sudo cp "${APP_DIR}/deploy/ubuntu/nginx-graffiti-student.conf" /etc/nginx/sites-available/graffiti-student
     sudo ln -sf /etc/nginx/sites-available/graffiti-student /etc/nginx/sites-enabled/graffiti-student
     sudo nginx -t
+    sudo systemctl enable "${SERVICE_NAME}" "${WORKER_SERVICE_NAME}" "${HANDOFF_WORKER_SERVICE_NAME}" >/dev/null
     sudo systemctl reload nginx
 fi
 
 restart_service "${SERVICE_NAME}"
 restart_service "${WORKER_SERVICE_NAME}"
+restart_service "${HANDOFF_WORKER_SERVICE_NAME}"
 
 AUTH_TOKEN="${AUTH_TOKEN}" HEALTHCHECK_URL="${HEALTHCHECK_URL}" "${VENV_DIR}/bin/python" - <<'PY'
 import json

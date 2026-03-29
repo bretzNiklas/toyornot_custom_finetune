@@ -1,6 +1,12 @@
 # Judge API Quick Spec
 
-The public Judge API is now async-first and queue-backed.
+The public Judge API is async-first and queue-backed.
+
+The supported upstream path is:
+
+1. upload the image to Supabase Storage
+2. insert a `pending` row into `public.judge_api_jobs`
+3. let the Ubuntu handoff worker call this API and poll for completion
 
 Base URL:
 
@@ -148,12 +154,12 @@ External callers should use:
 1. `POST /predictions`
 2. `GET /predictions/{job_id}`
 
-## Frontend Pattern
+## Upstream Pattern
 
 Recommended flow:
 
-1. Upload the image to your backend.
-2. Base64-encode the raw file bytes.
-3. Call `POST /predictions`.
-4. Wait your initial UI delay.
-5. Poll `GET /predictions/{job_id}?wait_ms=8000` until the job is `completed` or `failed`.
+1. Vercel `/api/rate` uploads the source image to Supabase Storage.
+2. Vercel inserts a `pending` row into `public.judge_api_jobs`.
+3. The Ubuntu handoff worker calls `POST /predictions`.
+4. The worker polls `GET /predictions/{job_id}?wait_ms=8000` until completion.
+5. The worker archives the judged image on local disk, writes `public.judge_api_results` with that archive reference, and finalizes the job row.

@@ -1,22 +1,17 @@
 # API Spec
 
-This document describes the live public inference API served from your Ubuntu box by [local_api.py](C:/Users/qwert/Desktop/custom_model/deploy/local_api.py), exposed through a Cloudflare named tunnel on `api.piecerate.me`.
+This document describes the live Judge API served from the Ubuntu box by [local_api.py](C:/Users/qwert/Desktop/custom_model/deploy/local_api.py), plus the supported upstream handoff pattern used by the Ubuntu Supabase worker.
 
-Current live model:
+Base URL:
 
-- `student-v2-dinov2`
-- backbone: `facebook/dinov2-base`
-- task: graffiti image usability gating plus quality scoring
+- `https://api.piecerate.me`
 
 Important:
 
-- Do not call this API directly from a public browser client with the bearer token.
-- Store the token on your backend, server action, edge function, or API route.
-- Let the frontend call your own backend, and let your backend call this API.
-
-## Base URL
-
-- `https://api.piecerate.me`
+- Do not expose the bearer token in browser code.
+- The supported public contract is async-first: `POST /predictions` plus `GET /predictions/{job_id}`.
+- `POST /predict` still exists for internal/manual server use, but it is not the supported upstream integration contract.
+- The supported upstream flow is `public.judge_api_jobs` row -> Ubuntu handoff worker -> Judge API `/predictions` -> `public.judge_api_results`.
 
 ## Authentication
 
@@ -26,6 +21,12 @@ Every request must include:
 Authorization: Bearer <YOUR_SECRET_TOKEN>
 ```
 
+## Supported Endpoints
+
+- `GET /health`
+- `POST /predictions`
+- `GET /predictions/{job_id}`
+
 ## Health Endpoint
 
 Method:
@@ -34,29 +35,32 @@ Method:
 GET /health
 ```
 
-Example:
-
-```http
-GET https://api.piecerate.me/health
-Authorization: Bearer <YOUR_SECRET_TOKEN>
-```
-
 Success response:
 
 ```json
 {
   "status": "ok",
   "model_version": "student-v2-dinov2",
-  "app": "graffiti-student-local"
+  "app": "graffiti-student-local",
+  "queued_jobs": 0,
+  "processing_jobs": 0,
+  "oldest_queued_age_seconds": null,
+  "average_processing_seconds": 5.0,
+  "worker_concurrency": 1,
+  "fresh_worker_count": 1,
+  "worker_heartbeat_age_seconds": 1.2,
+  "worker_heartbeat_fresh": true
 }
 ```
 
-## Prediction Endpoint
+If the local queue worker heartbeat is stale, the endpoint returns `503`.
+
+## Create Prediction Job
 
 Method:
 
 ```http
-POST /predict
+POST /predictions
 ```
 
 Headers:
@@ -76,47 +80,113 @@ Request body:
 }
 ```
 
-### Request Fields
-
-- `image_b64`
-  Required. Base64 string of the image bytes.
-- `filename`
-  Optional. Echoed back in the response.
-- `include_debug`
-  Optional boolean. Default `false`.
-
-## Success Response
-
-Example:
+Accepted response:
 
 ```json
 {
-  "filename": "example.jpg",
-  "image_usable": true,
-  "medium": "wall_piece",
-  "overall_score": 7,
-  "legibility": 6,
-  "letter_structure": 7,
-  "line_quality": 7,
-  "composition": 7,
-  "color_harmony": 7,
-  "originality": 7,
+  "job_id": "uuid-here",
   "request_id": "uuid-here",
+  "status": "queued",
+  "queue_position": 1,
+  "estimated_wait_seconds": 5,
+  "poll_url": "https://api.piecerate.me/predictions/uuid-here",
   "model_version": "student-v2-dinov2"
 }
 ```
 
-### Medium Values
+Overload response:
 
-- `paper_sketch`
-- `wall_piece`
-- `digital`
-- `other_or_unclear`
+```json
+{
+  "error": "queue_overloaded",
+  "message": "The prediction queue is currently too busy. Retry later.",
+  "request_id": "uuid-here",
+  "model_version": "student-v2-dinov2",
+  "job_id": "uuid-here",
+  "queue_position": 18,
+  "estimated_wait_seconds": 97
+}
+```
 
-### Score Fields
+`Retry-After` is returned on overload responses.
 
-Score fields are integers from `1` to `10` when applicable:
+## Poll Prediction Job
 
+Method:
+
+```http
+GET /predictions/{job_id}
+```
+
+Optional long-poll:
+
+```http
+GET /predictions/{job_id}?wait_ms=8000
+```
+
+Queued or processing response:
+
+```json
+{
+  "job_id": "uuid-here",
+  "request_id": "uuid-here",
+  "status": "queued",
+  "model_version": "student-v2-dinov2",
+  "queue_position": 2,
+  "estimated_wait_seconds": 9
+}
+```
+
+Completed response:
+
+```json
+{
+  "job_id": "uuid-here",
+  "request_id": "uuid-here",
+  "status": "completed",
+  "model_version": "student-v2-dinov2",
+  "result": {
+    "filename": "piece.jpg",
+    "image_usable": true,
+    "medium": "wall_piece",
+    "overall_score": 7,
+    "legibility": 6,
+    "letter_structure": 7,
+    "line_quality": 7,
+    "composition": 7,
+    "color_harmony": 7,
+    "originality": 7,
+    "request_id": "uuid-here",
+    "model_version": "student-v2-dinov2"
+  }
+}
+```
+
+Failed response:
+
+```json
+{
+  "job_id": "uuid-here",
+  "request_id": "uuid-here",
+  "status": "failed",
+  "model_version": "student-v2-dinov2",
+  "error": "invalid_image",
+  "message": "The uploaded content is not a valid image."
+}
+```
+
+## Request And Result Fields
+
+Request fields:
+
+- `image_b64` required base64 string of the image bytes
+- `filename` optional file name echoed back in successful results
+- `include_debug` optional boolean for internal/manual scoring only
+
+Result fields:
+
+- `image_usable`
+- `medium`
 - `overall_score`
 - `legibility`
 - `letter_structure`
@@ -124,36 +194,21 @@ Score fields are integers from `1` to `10` when applicable:
 - `composition`
 - `color_harmony`
 - `originality`
+- `request_id`
+- `model_version`
 
-Fields may be `null` when not applicable.
+`medium` values:
 
-### Debug Payload
+- `paper_sketch`
+- `wall_piece`
+- `digital`
+- `other_or_unclear`
 
-When `include_debug = true`, the response may also include:
+Scores are integers from `1` to `10` when applicable and may be `null` when the image is unusable or outside the core scoring domain.
 
-```json
-{
-  "debug": {
-    "usable_probability": 0.998,
-    "usable_threshold": 0.5,
-    "color_applicable_probability": 0.81,
-    "color_threshold": 0.45
-  }
-}
-```
+## Structured Error Payload
 
-This is intended for internal debugging, not for public frontend display.
-
-## Response Rules
-
-1. If `image_usable = false`, all score fields are `null`.
-2. If `image_usable = true` and `medium` is `digital` or `other_or_unclear`, all score fields are `null`.
-3. If `image_usable = true` and `medium` is `paper_sketch` or `wall_piece`, score fields are returned.
-4. `color_harmony` may be `null` even for usable scored images if color is not applicable.
-
-## Error Response
-
-Errors return structured JSON:
+Errors return JSON like:
 
 ```json
 {
@@ -164,98 +219,25 @@ Errors return structured JSON:
 }
 ```
 
-### Common Error Codes
+Common codes:
 
 - `invalid_base64`
 - `invalid_image`
 - `image_too_large`
 - `image_too_small`
 - `image_too_large_dimensions`
+- `queue_overloaded`
+- `job_not_found`
 - `internal_error`
 
-## Backend Integration Pattern
+## Upstream Worker Pattern
 
-Recommended flow:
+The supported end-to-end contract is:
 
-1. Frontend uploads an image to your backend.
-2. Your backend converts the file to base64 if needed.
-3. Your backend calls `POST https://api.piecerate.me/predict` with the bearer token.
-4. Your backend returns a sanitized response to the frontend.
+1. Vercel `/api/rate` uploads `judgeImage` to Supabase Storage.
+2. Vercel inserts a `pending` row into `public.judge_api_jobs`.
+3. `deploy/judge_api_handoff_worker.py` claims the row, downloads the storage object, and calls `POST /predictions`.
+4. The worker polls `GET /predictions/{job_id}?wait_ms=8000` until the Judge API reaches `completed` or `failed`.
+5. The worker archives the judged image on local disk, upserts `public.judge_api_results` with that archive reference, marks the job row terminal, and deletes the transient Supabase storage object.
 
-Do not expose the bearer token or raw API URL from client-side browser code.
-
-## Recommended TypeScript Types
-
-```ts
-type PredictRequest = {
-  image_b64: string;
-  filename?: string;
-  include_debug?: boolean;
-};
-
-type PredictResponse = {
-  filename?: string;
-  image_usable: boolean;
-  medium: "paper_sketch" | "wall_piece" | "digital" | "other_or_unclear";
-  overall_score: number | null;
-  legibility: number | null;
-  letter_structure: number | null;
-  line_quality: number | null;
-  composition: number | null;
-  color_harmony: number | null;
-  originality: number | null;
-  request_id: string;
-  model_version: string;
-  debug?: {
-    usable_probability: number;
-    usable_threshold: number;
-    color_applicable_probability: number;
-    color_threshold: number;
-  };
-};
-
-type ApiError = {
-  error: string;
-  message: string;
-  request_id: string;
-  model_version: string;
-};
-```
-
-## Product Guidance
-
-For the current live deployment, trust these outputs most:
-
-- `image_usable`
-- `overall_score`
-
-`medium` is meaningfully better in `student-v2-dinov2` than in the original `v1`, but it should still be treated as secondary metadata rather than the core product output.
-
-The main product contract should remain:
-
-1. Is the image usable?
-2. If usable and in scope, what is the overall score?
-3. Optionally show rubric subscores as explanation.
-
-## Current Model Notes
-
-Observed properties of the live `student-v2-dinov2` deployment:
-
-- strong `image_usable` performance
-- clearly improved `overall_score` accuracy over the original ViT model
-- better `medium` stability than `v1`
-- small score drift under crop, rotation, or mirroring, but usually within the same rough quality band
-
-This means the API is suitable for production use where slight scoring variation is acceptable, but it should not be treated as a mathematically exact grading system.
-
-## Deployment Notes
-
-Current production path:
-
-- model host: local Ubuntu server
-- app server: FastAPI + uvicorn
-- reverse proxy: nginx
-- public exposure: Cloudflare named tunnel
-- public hostname: `https://api.piecerate.me`
-
-This replaced the earlier Modal deployment path for cost reasons.
+The worker is the only process that writes `public.judge_api_results`.
