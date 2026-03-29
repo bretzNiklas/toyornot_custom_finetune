@@ -294,8 +294,6 @@ class SupabaseJudgeApiRuntime:
             "worker_attempt_count": candidate.worker_attempt_count + 1,
             "updated_at": claimed_at,
         }
-        if candidate.status == JUDGE_JOB_STATUS_PENDING:
-            payload["next_attempt_at"] = None
 
         try:
             query = (
