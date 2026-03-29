@@ -669,6 +669,7 @@ def build_result_row_from_success(
     result_payload = _extract_result_payload(response_payload)
     return {
         "request_id": request_id,
+        "status": JUDGE_JOB_STATUS_COMPLETED,
         "image_usable": result_payload.get("image_usable"),
         "medium": result_payload.get("medium"),
         "overall_score": result_payload.get("overall_score"),
@@ -707,6 +708,7 @@ def build_result_row_from_error(
     )
     return {
         "request_id": request_id,
+        "status": JUDGE_JOB_STATUS_FAILED,
         "image_usable": None,
         "medium": None,
         "overall_score": None,
