@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from huggingface_hub import snapshot_download
+try:
+    from huggingface_hub import snapshot_download
+except ImportError:  # pragma: no cover - exercised indirectly in test import paths
+    def snapshot_download(*args, **kwargs):
+        raise RuntimeError("huggingface_hub is required to download model artifacts.")
 
 
 METADATA_FILENAME = ".hf-model-source.json"

@@ -26,15 +26,28 @@ jobs:
           python -m pip install -r requirements-serve.txt
 
       - name: Run deployment safety tests
-        run: python -m unittest tests.test_local_api tests.test_sync_model_artifact
+        run: python -m unittest tests.test_local_api tests.test_local_queue tests.test_local_worker tests.test_sync_model_artifact
 
   deploy:
     runs-on: [self-hosted, linux, x64, graffiti-deploy]
     timeout-minutes: 20
     needs: test
-    env:
-      DEPLOY_APP_DIR: /home/niklas/toyornot_custom_finetune
     steps:
       - name: Deploy commit to production
         run: |
-          bash "${DEPLOY_APP_DIR}/deploy/ubuntu/deploy_remote.sh" "${GITHUB_SHA}"
+          if [ -x /srv/graffiti-student/app/deploy/ubuntu/deploy_remote.sh ]; then
+            export APP_DIR=/srv/graffiti-student/app
+            export VENV_DIR=/srv/graffiti-student/venv
+            export ENV_FILE=/etc/graffiti-student.env
+            export MODEL_ROOT=/srv/graffiti-student/models
+          elif [ -x /home/niklas/toyornot_custom_finetune/deploy/ubuntu/deploy_remote.sh ]; then
+            export APP_DIR=/home/niklas/toyornot_custom_finetune
+            export VENV_DIR=/home/niklas/toyornot_custom_finetune/.venv
+            export ENV_FILE=/home/niklas/toyornot_custom_finetune/.env.local
+            export MODEL_ROOT=/home/niklas/toyornot_custom_finetune/models
+          else
+            echo "No known deployment checkout found on runner." >&2
+            exit 1
+          fi
+
+          bash "${APP_DIR}/deploy/ubuntu/deploy_remote.sh" "${GITHUB_SHA}"

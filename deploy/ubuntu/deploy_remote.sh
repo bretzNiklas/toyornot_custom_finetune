@@ -14,8 +14,12 @@ APP_DIR="${APP_DIR:-${DEFAULT_APP_DIR}}"
 VENV_DIR="${VENV_DIR:-${APP_DIR}/.venv}"
 ENV_FILE="${ENV_FILE:-${APP_DIR}/.env.local}"
 MODEL_ROOT="${MODEL_ROOT:-${APP_DIR}/models}"
+RUNTIME_ROOT="${RUNTIME_ROOT:-${APP_DIR}/runtime}"
+JOBS_DB_PATH="${JOBS_DB_PATH:-${RUNTIME_ROOT}/jobs.sqlite3}"
+JOB_SPOOL_DIR="${JOB_SPOOL_DIR:-${RUNTIME_ROOT}/spool}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 SERVICE_NAME="${SERVICE_NAME:-graffiti-student}"
+WORKER_SERVICE_NAME="${WORKER_SERVICE_NAME:-graffiti-student-worker}"
 GIT_REMOTE="${GIT_REMOTE:-origin}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health}"
 
@@ -27,25 +31,30 @@ dump_service_logs() {
     echo "Deployment failed. Recent ${SERVICE_NAME} logs:" >&2
     if can_sudo; then
         sudo systemctl status "${SERVICE_NAME}" --no-pager || true
+        sudo systemctl status "${WORKER_SERVICE_NAME}" --no-pager || true
         sudo journalctl -u "${SERVICE_NAME}" -n 100 -l --no-pager || true
+        sudo journalctl -u "${WORKER_SERVICE_NAME}" -n 100 -l --no-pager || true
     else
         systemctl status "${SERVICE_NAME}" --no-pager || true
+        systemctl status "${WORKER_SERVICE_NAME}" --no-pager || true
         journalctl -u "${SERVICE_NAME}" -n 100 -l --no-pager || true
+        journalctl -u "${WORKER_SERVICE_NAME}" -n 100 -l --no-pager || true
     fi
 }
 
 restart_service() {
+    local target_service="$1"
     if can_sudo; then
         sudo systemctl daemon-reload
-        sudo systemctl restart "${SERVICE_NAME}"
-        sudo systemctl is-active --quiet "${SERVICE_NAME}"
+        sudo systemctl restart "${target_service}"
+        sudo systemctl is-active --quiet "${target_service}"
         return
     fi
 
     local main_pid
-    main_pid="$(systemctl show -p MainPID --value "${SERVICE_NAME}")"
+    main_pid="$(systemctl show -p MainPID --value "${target_service}")"
     if [[ -z "${main_pid}" || "${main_pid}" == "0" ]]; then
-        echo "Unable to determine MainPID for ${SERVICE_NAME} without sudo." >&2
+        echo "Unable to determine MainPID for ${target_service} without sudo." >&2
         exit 1
     fi
 
@@ -53,16 +62,16 @@ restart_service() {
 
     for _ in {1..30}; do
         sleep 1
-        if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        if systemctl is-active --quiet "${target_service}"; then
             local new_pid
-            new_pid="$(systemctl show -p MainPID --value "${SERVICE_NAME}")"
+            new_pid="$(systemctl show -p MainPID --value "${target_service}")"
             if [[ -n "${new_pid}" && "${new_pid}" != "0" && "${new_pid}" != "${main_pid}" ]]; then
                 return
             fi
         fi
     done
 
-    echo "Service ${SERVICE_NAME} did not restart cleanly after SIGTERM." >&2
+    echo "Service ${target_service} did not restart cleanly after SIGTERM." >&2
     exit 1
 }
 
@@ -89,6 +98,8 @@ set +a
 MODEL_REVISION="${MODEL_REVISION:-main}"
 MODEL_DIR="${MODEL_DIR:-${MODEL_ROOT}/${MODEL_VERSION}}"
 export MODEL_DIR MODEL_REPO_ID MODEL_REVISION MODEL_VERSION HF_TOKEN
+
+mkdir -p "${RUNTIME_ROOT}" "${JOB_SPOOL_DIR}"
 
 mkdir -p "${MODEL_ROOT}"
 
@@ -117,7 +128,17 @@ else
     echo "Skipping model sync because HF_TOKEN is not set and ${MODEL_DIR}/.hf-model-source.json is missing." >&2
 fi
 
-restart_service
+if can_sudo; then
+    sudo cp "${APP_DIR}/deploy/ubuntu/graffiti-student.service" /etc/systemd/system/graffiti-student.service
+    sudo cp "${APP_DIR}/deploy/ubuntu/graffiti-student-worker.service" /etc/systemd/system/graffiti-student-worker.service
+    sudo cp "${APP_DIR}/deploy/ubuntu/nginx-graffiti-student.conf" /etc/nginx/sites-available/graffiti-student
+    sudo ln -sf /etc/nginx/sites-available/graffiti-student /etc/nginx/sites-enabled/graffiti-student
+    sudo nginx -t
+    sudo systemctl reload nginx
+fi
+
+restart_service "${SERVICE_NAME}"
+restart_service "${WORKER_SERVICE_NAME}"
 
 AUTH_TOKEN="${AUTH_TOKEN}" HEALTHCHECK_URL="${HEALTHCHECK_URL}" "${VENV_DIR}/bin/python" - <<'PY'
 import json
