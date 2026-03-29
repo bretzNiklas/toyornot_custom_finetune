@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import socket
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger("graffiti_judge_handoff_runtime")
 
 
 JUDGE_JOB_STATUS_PENDING = "pending"
@@ -212,6 +215,7 @@ class SupabaseJudgeApiRuntime:
             self.config.supabase_url,
             self.config.supabase_service_role_key,
         )
+        self._claim_rpc_fallback_logged = False
 
     def claim_next_job(self) -> JudgeApiJob | None:
         try:
@@ -223,7 +227,88 @@ class SupabaseJudgeApiRuntime:
                 },
             ).execute()
         except Exception as exc:
+            if _is_missing_claim_rpc_error(exc):
+                if not self._claim_rpc_fallback_logged:
+                    logger.warning(
+                        "Supabase RPC claim_next_judge_api_job is missing; falling back to table-based job claims."
+                    )
+                    self._claim_rpc_fallback_logged = True
+                return self._claim_next_job_via_table_fallback()
             raise RetryableWorkerError(f"Supabase job claim failed: {exc}") from exc
+
+        row = _first_row(getattr(response, "data", None))
+        if row is None:
+            return None
+        return normalize_job_row(row)
+
+    def _claim_next_job_via_table_fallback(self) -> JudgeApiJob | None:
+        candidate = self._select_next_pending_job()
+        if candidate is None:
+            candidate = self._select_next_stale_job(JUDGE_JOB_STATUS_CLAIMED)
+        if candidate is None:
+            candidate = self._select_next_stale_job(JUDGE_JOB_STATUS_PROCESSING)
+        if candidate is None:
+            return None
+        return self._claim_job_candidate(candidate)
+
+    def _select_next_pending_job(self) -> JudgeApiJob | None:
+        now_iso = utc_now_iso()
+        try:
+            response = (
+                self.supabase.table(self.config.jobs_table)
+                .select("*")
+                .eq("status", JUDGE_JOB_STATUS_PENDING)
+                .or_(f"next_attempt_at.is.null,next_attempt_at.lte.{now_iso}")
+                .order("next_attempt_at")
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise RetryableWorkerError(f"Supabase pending job lookup failed: {exc}") from exc
+        row = _first_row(getattr(response, "data", None))
+        return None if row is None else normalize_job_row(row)
+
+    def _select_next_stale_job(self, status: str) -> JudgeApiJob | None:
+        stale_cutoff_iso = utc_in_seconds_iso(-self.config.lock_timeout_seconds)
+        try:
+            response = (
+                self.supabase.table(self.config.jobs_table)
+                .select("*")
+                .eq("status", status)
+                .lt("locked_at", stale_cutoff_iso)
+                .order("locked_at")
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise RetryableWorkerError(f"Supabase stale job lookup failed: {exc}") from exc
+        row = _first_row(getattr(response, "data", None))
+        return None if row is None else normalize_job_row(row)
+
+    def _claim_job_candidate(self, candidate: JudgeApiJob) -> JudgeApiJob | None:
+        claimed_at = utc_now_iso()
+        payload = {
+            "status": JUDGE_JOB_STATUS_CLAIMED,
+            "locked_at": claimed_at,
+            "locked_by": self.config.worker_id,
+            "worker_attempt_count": candidate.worker_attempt_count + 1,
+            "updated_at": claimed_at,
+        }
+        if candidate.status == JUDGE_JOB_STATUS_PENDING:
+            payload["next_attempt_at"] = None
+
+        try:
+            query = (
+                self.supabase.table(self.config.jobs_table)
+                .update(payload)
+                .eq("request_id", candidate.request_id)
+                .eq("status", candidate.status)
+            )
+            if candidate.locked_at:
+                query = query.eq("locked_at", candidate.locked_at)
+            response = query.execute()
+        except Exception as exc:
+            raise RetryableWorkerError(f"Supabase fallback job claim update failed: {exc}") from exc
 
         row = _first_row(getattr(response, "data", None))
         if row is None:
@@ -839,3 +924,8 @@ def _safe_archive_filename(job: JudgeApiJob) -> str:
     if input_name:
         return input_name.replace("\\", "_").replace("/", "_")[:200]
     return f"{job.request_id}.img"
+
+
+def _is_missing_claim_rpc_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "claim_next_judge_api_job" in message and "PGRST202" in message

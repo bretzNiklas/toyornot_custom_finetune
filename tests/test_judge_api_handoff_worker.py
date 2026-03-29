@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock
 
 from deploy.judge_api_handoff_runtime import (
     ArchivedJudgeImage,
@@ -310,6 +311,27 @@ class JudgeApiHandoffRuntimeTests(unittest.TestCase):
         assert job is not None
         self.assertEqual(job.status, "processing")
         self.assertEqual(job.piecerate_job_id, "piecerate-job-1")
+
+    def test_claim_next_job_falls_back_when_claim_rpc_is_missing(self) -> None:
+        class FakeRpcMissingClient:
+            def rpc(self, name, params):
+                self.name = name
+                self.params = params
+                return self
+
+            def execute(self):
+                raise Exception(
+                    "{'message': 'Could not find the function public.claim_next_judge_api_job(...)', 'code': 'PGRST202'}"
+                )
+
+        runtime = SupabaseJudgeApiRuntime(build_config(), supabase_client=FakeRpcMissingClient())
+        expected = build_job()
+        runtime._claim_next_job_via_table_fallback = Mock(return_value=expected)  # type: ignore[method-assign]
+
+        job = runtime.claim_next_job()
+
+        self.assertEqual(job, expected)
+        runtime._claim_next_job_via_table_fallback.assert_called_once()
 
 
 class JudgeApiHandoffWorkerTests(unittest.TestCase):
