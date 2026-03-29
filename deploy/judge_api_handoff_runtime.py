@@ -162,6 +162,7 @@ class JudgeApiJob:
 @dataclass(frozen=True)
 class JudgeApiResultRecord:
     request_id: str
+    status: str
     judge_api_job_id: str | None
     judge_api_request_id: str | None
     judge_api_model_version: str | None
@@ -170,8 +171,12 @@ class JudgeApiResultRecord:
     error_payload: Any | None
 
     @property
+    def is_terminal(self) -> bool:
+        return self.status in {JUDGE_JOB_STATUS_COMPLETED, JUDGE_JOB_STATUS_FAILED}
+
+    @property
     def terminal_status(self) -> str:
-        if self.error_payload is not None:
+        if self.status == JUDGE_JOB_STATUS_FAILED:
             return JUDGE_JOB_STATUS_FAILED
         return JUDGE_JOB_STATUS_COMPLETED
 
@@ -646,6 +651,7 @@ def normalize_job_row(row: dict[str, Any]) -> JudgeApiJob:
 def normalize_result_row(row: dict[str, Any]) -> JudgeApiResultRecord:
     return JudgeApiResultRecord(
         request_id=_required_row_str(row, "request_id"),
+        status=_required_row_str(row, "status"),
         judge_api_job_id=_as_optional_str(row.get("judge_api_job_id")),
         judge_api_request_id=_as_optional_str(row.get("judge_api_request_id")),
         judge_api_model_version=_as_optional_str(row.get("judge_api_model_version")),

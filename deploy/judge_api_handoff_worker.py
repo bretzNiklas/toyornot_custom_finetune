@@ -37,7 +37,7 @@ def process_handoff_job(
     archived_image: ArchivedJudgeImage | None = None
     try:
         existing_result = runtime.get_result_by_request_id(job.request_id)
-        if existing_result is not None:
+        if existing_result is not None and existing_result.is_terminal:
             archived_image = runtime.ensure_archived_input_image(job)
             _log_archived_input(archived_image, job)
             runtime.finalize_job_from_existing_result(job, existing_result)
@@ -48,6 +48,12 @@ def process_handoff_job(
                 existing_result.terminal_status,
             )
             return
+        if existing_result is not None:
+            logger.info(
+                "Ignoring non-terminal existing result row for request_id=%s with status=%s.",
+                job.request_id,
+                existing_result.status,
+            )
 
         piecerate_job_id = job.piecerate_job_id
         piecerate_request_id = job.piecerate_request_id

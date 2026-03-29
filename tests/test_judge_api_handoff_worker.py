@@ -399,6 +399,7 @@ class JudgeApiHandoffWorkerTests(unittest.TestCase):
         config = build_config()
         existing = JudgeApiResultRecord(
             request_id="request-1",
+            status=JUDGE_JOB_STATUS_COMPLETED,
             judge_api_job_id="existing-job",
             judge_api_request_id="existing-request",
             judge_api_model_version="student-v2-dinov2",
@@ -418,6 +419,55 @@ class JudgeApiHandoffWorkerTests(unittest.TestCase):
         self.assertEqual(len(runtime.deleted_inputs), 1)
         self.assertEqual(len(runtime.download_calls), 0)
         self.assertEqual(len(piecerate.submit_calls), 0)
+
+    def test_process_handoff_job_ignores_non_terminal_existing_result(self) -> None:
+        config = build_config()
+        existing = JudgeApiResultRecord(
+            request_id="request-1",
+            status="queued",
+            judge_api_job_id="existing-job",
+            judge_api_request_id="existing-request",
+            judge_api_model_version="student-v2-dinov2",
+            judge_api_http_status=202,
+            response_payload={"status": "queued"},
+            error_payload=None,
+        )
+        runtime = FakeRuntime(config, claimed_jobs=[build_job()], existing_result=existing)
+        piecerate = FakePiecerateClient(
+            statuses=[
+                PiecerateStatusResponse(
+                    job_id="piecerate-job-1",
+                    request_id="piecerate-request-1",
+                    status="completed",
+                    http_status=200,
+                    payload={
+                        "job_id": "piecerate-job-1",
+                        "request_id": "piecerate-request-1",
+                        "status": "completed",
+                        "result": {
+                            "image_usable": True,
+                            "medium": "paper_sketch",
+                            "overall_score": 7,
+                            "legibility": 7,
+                            "letter_structure": 7,
+                            "line_quality": 7,
+                            "composition": 7,
+                            "color_harmony": 7,
+                            "originality": 7,
+                        },
+                    },
+                )
+            ]
+        )
+
+        processed = run_worker_iteration(runtime, piecerate, config)
+
+        self.assertEqual(processed, True)
+        self.assertEqual(len(runtime.finalized_existing), 0)
+        self.assertEqual(len(runtime.download_calls), 1)
+        self.assertEqual(len(piecerate.submit_calls), 1)
+        self.assertEqual(len(runtime.upserted_results), 1)
+        self.assertEqual(len(runtime.completed_updates), 1)
 
     def test_process_handoff_job_marks_terminal_failure_from_poll(self) -> None:
         config = build_config()
