@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from deploy.judge_api_handoff_runtime import (
     ArchivedJudgeImage,
@@ -39,6 +39,7 @@ def build_config() -> JudgeApiHandoffConfig:
         judged_image_archive_dir=Path("/srv/graffiti-student/runtime/judged-images"),
         worker_id="worker-1",
         lock_timeout_seconds=600,
+        lock_refresh_seconds=120,
         poll_wait_ms=8_000,
         idle_sleep_seconds=0.01,
         safety_sweep_seconds=600,
@@ -427,6 +428,23 @@ def build_completed_status_response(*, score: int = 7) -> PiecerateStatusRespons
 
 
 class JudgeApiHandoffRuntimeTests(unittest.TestCase):
+    def test_from_env_rejects_invalid_lock_refresh_seconds(self) -> None:
+        for raw_value in ("0", "301"):
+            with self.subTest(raw_value=raw_value):
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "SUPABASE_URL": "https://example.supabase.co",
+                        "SUPABASE_SERVICE_ROLE_KEY": "service-role-key",
+                        "JUDGE_API_TOKEN": "judge-token",
+                        "JUDGE_JOB_LOCK_TIMEOUT_SECONDS": "600",
+                        "JUDGE_JOB_LOCK_REFRESH_SECONDS": raw_value,
+                    },
+                    clear=True,
+                ):
+                    with self.assertRaises(ValueError):
+                        JudgeApiHandoffConfig.from_env()
+
     def test_claim_next_job_returns_none_when_rpc_returns_no_rows(self) -> None:
         runtime = SupabaseJudgeApiRuntime(build_config(), supabase_client=FakeSupabaseClaimClient([]))
         self.assertIsNone(runtime.claim_next_job())
@@ -653,7 +671,7 @@ class JudgeApiHandoffWorkerTests(unittest.TestCase):
         self.assertEqual(len(runtime.download_calls), 1)
         self.assertEqual(len(piecerate.submit_calls), 1)
         self.assertEqual(len(runtime.processing_updates), 1)
-        self.assertEqual(len(runtime.refresh_updates), 1)
+        self.assertEqual(len(runtime.refresh_updates), 0)
         self.assertEqual(len(runtime.upserted_results), 1)
         self.assertEqual(runtime.upserted_results[0]["overall_score"], 7)
         source_image = runtime.upserted_results[0]["response_payload"]["source_image"]
@@ -663,6 +681,120 @@ class JudgeApiHandoffWorkerTests(unittest.TestCase):
         self.assertEqual(len(runtime.completed_updates), 1)
         self.assertEqual(len(runtime.archived_inputs), 1)
         self.assertEqual(len(runtime.deleted_inputs), 1)
+
+    def test_process_handoff_job_throttles_lock_refreshes_for_fresh_jobs(self) -> None:
+        config = build_config()
+        runtime = FakeRuntime(config, claimed_jobs=[build_job()])
+        piecerate = FakePiecerateClient(
+            statuses=[
+                PiecerateStatusResponse(
+                    job_id="piecerate-job-1",
+                    request_id="piecerate-request-1",
+                    status="queued",
+                    http_status=200,
+                    payload={"job_id": "piecerate-job-1", "request_id": "piecerate-request-1", "status": "queued"},
+                ),
+                PiecerateStatusResponse(
+                    job_id="piecerate-job-1",
+                    request_id="piecerate-request-1",
+                    status="processing",
+                    http_status=200,
+                    payload={
+                        "job_id": "piecerate-job-1",
+                        "request_id": "piecerate-request-1",
+                        "status": "processing",
+                    },
+                ),
+                build_completed_status_response(score=7),
+            ]
+        )
+        base_time = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+
+        with patch(
+            "deploy.judge_api_handoff_worker._utc_now",
+            side_effect=[
+                base_time,
+                base_time + timedelta(seconds=30),
+                base_time + timedelta(seconds=90),
+            ],
+        ):
+            process_handoff_job(runtime, piecerate, config, build_job())
+
+        self.assertEqual(len(runtime.processing_updates), 1)
+        self.assertEqual(len(runtime.refresh_updates), 0)
+        self.assertEqual(len(runtime.completed_updates), 1)
+
+    def test_process_handoff_job_refreshes_lock_once_threshold_elapses(self) -> None:
+        config = build_config()
+        runtime = FakeRuntime(config, claimed_jobs=[build_job()])
+        piecerate = FakePiecerateClient(
+            statuses=[
+                PiecerateStatusResponse(
+                    job_id="piecerate-job-1",
+                    request_id="piecerate-request-1",
+                    status="queued",
+                    http_status=200,
+                    payload={"job_id": "piecerate-job-1", "request_id": "piecerate-request-1", "status": "queued"},
+                ),
+                PiecerateStatusResponse(
+                    job_id="piecerate-job-1",
+                    request_id="piecerate-request-1",
+                    status="queued",
+                    http_status=200,
+                    payload={"job_id": "piecerate-job-1", "request_id": "piecerate-request-1", "status": "queued"},
+                ),
+                build_completed_status_response(score=8),
+            ]
+        )
+        base_time = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+
+        with patch(
+            "deploy.judge_api_handoff_worker._utc_now",
+            side_effect=[
+                base_time,
+                base_time + timedelta(seconds=30),
+                base_time + timedelta(seconds=130),
+            ],
+        ):
+            process_handoff_job(runtime, piecerate, config, build_job())
+
+        self.assertEqual(len(runtime.processing_updates), 1)
+        self.assertEqual(len(runtime.refresh_updates), 1)
+        self.assertEqual(runtime.refresh_updates[0]["status"], JUDGE_JOB_STATUS_PROCESSING)
+        self.assertEqual(len(runtime.completed_updates), 1)
+
+    def test_process_handoff_job_refreshes_reclaimed_processing_immediately_when_stale(self) -> None:
+        config = build_config()
+        base_time = datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc)
+        stale_job = build_job(
+            status=JUDGE_JOB_STATUS_PROCESSING,
+            worker_attempt_count=2,
+            locked_at=(base_time - timedelta(seconds=121)).isoformat(),
+            piecerate_job_id="piecerate-job-1",
+            piecerate_request_id="piecerate-request-1",
+        )
+        runtime = FakeRuntime(config, claimed_jobs=[stale_job])
+        piecerate = FakePiecerateClient(
+            statuses=[
+                PiecerateStatusResponse(
+                    job_id="piecerate-job-1",
+                    request_id="piecerate-request-1",
+                    status="queued",
+                    http_status=200,
+                    payload={"job_id": "piecerate-job-1", "request_id": "piecerate-request-1", "status": "queued"},
+                ),
+                build_completed_status_response(score=8),
+            ]
+        )
+
+        with patch("deploy.judge_api_handoff_worker._utc_now", return_value=base_time):
+            process_handoff_job(runtime, piecerate, config, stale_job)
+
+        self.assertEqual(len(piecerate.submit_calls), 0)
+        self.assertEqual(len(runtime.processing_updates), 0)
+        self.assertEqual(len(runtime.refresh_updates), 1)
+        self.assertEqual(runtime.refresh_updates[0]["piecerate_job_id"], "piecerate-job-1")
+        self.assertEqual(len(runtime.completed_updates), 1)
 
     def test_process_handoff_job_short_circuits_existing_result(self) -> None:
         config = build_config()
@@ -763,6 +895,7 @@ class JudgeApiHandoffWorkerTests(unittest.TestCase):
 
         self.assertEqual(len(runtime.failed_updates), 1)
         self.assertEqual(runtime.failed_updates[0]["last_error"], "The uploaded content is not a valid image.")
+        self.assertEqual(len(runtime.refresh_updates), 0)
         self.assertEqual(len(runtime.upserted_results), 1)
         error_payload = runtime.upserted_results[0]["error_payload"]
         self.assertIsNotNone(error_payload)

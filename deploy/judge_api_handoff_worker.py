@@ -55,6 +55,7 @@ def process_handoff_job(
     job: JudgeApiJob,
 ) -> None:
     archived_image: ArchivedJudgeImage | None = None
+    last_lock_refresh_at = _as_optional_datetime(job.locked_at)
     try:
         existing_result = runtime.get_result_by_request_id(job.request_id)
         if existing_result is not None and existing_result.is_terminal:
@@ -96,6 +97,7 @@ def process_handoff_job(
                 piecerate_job_id=piecerate_job_id,
                 piecerate_request_id=piecerate_request_id,
             )
+            last_lock_refresh_at = _utc_now()
             logger.info(
                 "Piecerate accepted request_id=%s with job_id=%s.",
                 job.request_id,
@@ -111,12 +113,19 @@ def process_handoff_job(
                 piecerate_request_id = status_response.request_id
 
             if status_response.status in PIECERATE_NON_TERMINAL_STATUSES:
-                runtime.refresh_job_lock(
-                    job,
-                    status=JUDGE_JOB_STATUS_PROCESSING,
-                    piecerate_job_id=piecerate_job_id,
-                    piecerate_request_id=piecerate_request_id,
-                )
+                now = _utc_now()
+                if _should_refresh_job_lock(
+                    last_lock_refresh_at,
+                    now=now,
+                    lock_refresh_seconds=config.lock_refresh_seconds,
+                ):
+                    runtime.refresh_job_lock(
+                        job,
+                        status=JUDGE_JOB_STATUS_PROCESSING,
+                        piecerate_job_id=piecerate_job_id,
+                        piecerate_request_id=piecerate_request_id,
+                    )
+                    last_lock_refresh_at = now
                 logger.info(
                     "Piecerate job_id=%s for request_id=%s remains %s.",
                     piecerate_job_id,
@@ -529,6 +538,22 @@ def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _should_refresh_job_lock(
+    last_lock_refresh_at: datetime | None,
+    *,
+    now: datetime,
+    lock_refresh_seconds: int,
+) -> bool:
+    if last_lock_refresh_at is None:
+        return True
+    elapsed_seconds = (now - _ensure_utc(last_lock_refresh_at)).total_seconds()
+    return elapsed_seconds >= lock_refresh_seconds
 
 
 def _extract_realtime_record(payload: dict[str, Any]) -> dict[str, Any] | None:

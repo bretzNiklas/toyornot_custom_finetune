@@ -6,7 +6,7 @@ This repository now supports the full Ubuntu-side worker handoff for Judge API j
 
 1. Vercel `/api/rate` uploads the `judgeImage` input to Supabase Storage.
 2. Vercel inserts a `pending` row into `public.judge_api_jobs`.
-3. `deploy/judge_api_handoff_worker.py` claims the job from Supabase.
+3. Supabase Realtime wakes `deploy/judge_api_handoff_worker.py`, which claims the job from Supabase.
 4. The worker downloads the image, calls `POST /predictions`, and polls `GET /predictions/{job_id}?wait_ms=8000`.
 5. The worker archives the judged image on local disk, upserts `public.judge_api_results` with that local image reference, updates the job row to `completed` or `failed`, and deletes the transient Supabase storage object.
 
@@ -23,14 +23,23 @@ This repository now supports the full Ubuntu-side worker handoff for Judge API j
 - optional `JUDGED_IMAGE_ARCHIVE_DIR` default `/srv/graffiti-student/runtime/judged-images`
 - optional `WORKER_ID` default current hostname
 - optional `JUDGE_JOB_LOCK_TIMEOUT_SECONDS` default `600`
+- optional `JUDGE_JOB_LOCK_REFRESH_SECONDS` default `120`
 - optional `JUDGE_JOB_POLL_WAIT_MS` default `8000`
-- optional `JUDGE_JOB_IDLE_SLEEP_SECONDS` default `1`
+- optional `JUDGE_JOB_IDLE_SLEEP_SECONDS` default `1` but ignored in event-driven mode
+- optional `JUDGE_JOB_SAFETY_SWEEP_SECONDS` default `600`
 - optional `JUDGE_JOB_MAX_ATTEMPTS` default `5`
 - optional `JUDGE_JOB_BACKOFF_SCHEDULE_SECONDS` default `30,120,600,600`
 
 ## Job Semantics
 
 - The worker claims one ready row at a time through the Supabase RPC `claim_next_judge_api_job`.
+- The worker is event-driven for Supabase work discovery: startup drain, Realtime wake, Realtime reconnect catch-up, and a 10-minute safety sweep.
+- `judge_api_jobs.created_at` is the enqueue timestamp.
+- `judge_api_jobs.started_at` is set on the first `pending -> claimed` transition and is preserved across retries or stale reclaims.
+- `judge_api_jobs.completed_at` is the terminal finish timestamp for both `completed` and `failed` rows.
+- If `claim_next_judge_api_job` is implemented in Supabase, it should set `started_at = coalesce(started_at, now())` when claiming a row.
+- During long-running Piecerate polls, the worker throttles `locked_at` refresh writes to at most once per `JUDGE_JOB_LOCK_REFRESH_SECONDS`.
+- Future `next_attempt_at` retries are scheduled locally in the worker instead of being discovered through steady-state Supabase polling.
 - Stale `claimed` or `processing` rows are reclaimable once `locked_at` is older than the configured lock timeout.
 - If a reclaimed `processing` row already has a `piecerate_job_id`, the worker resumes polling that remote Piecerate job instead of uploading the image again.
 - `request_id` is the idempotency key for `public.judge_api_results`.

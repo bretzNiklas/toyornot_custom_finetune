@@ -32,6 +32,7 @@ DEFAULT_RESULTS_TABLE = "judge_api_results"
 DEFAULT_INPUT_BUCKET = "judge-api-inputs"
 DEFAULT_JUDGED_IMAGE_ARCHIVE_DIR = "/srv/graffiti-student/runtime/judged-images"
 DEFAULT_LOCK_TIMEOUT_SECONDS = 600
+DEFAULT_LOCK_REFRESH_SECONDS = 120
 DEFAULT_POLL_WAIT_MS = 8_000
 DEFAULT_IDLE_SLEEP_SECONDS = 1.0
 DEFAULT_SAFETY_SWEEP_SECONDS = 600
@@ -95,11 +96,18 @@ class JudgeApiHandoffConfig:
     judged_image_archive_dir: Path
     worker_id: str
     lock_timeout_seconds: int
+    lock_refresh_seconds: int
     poll_wait_ms: int
     idle_sleep_seconds: float
     safety_sweep_seconds: int
     max_attempts: int
     backoff_schedule_seconds: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if self.lock_refresh_seconds <= 0:
+            raise ValueError("lock_refresh_seconds must be positive.")
+        if self.lock_refresh_seconds > (self.lock_timeout_seconds / 2):
+            raise ValueError("lock_refresh_seconds must be less than or equal to lock_timeout_seconds / 2.")
 
     @classmethod
     def from_env(cls) -> "JudgeApiHandoffConfig":
@@ -119,6 +127,10 @@ class JudgeApiHandoffConfig:
             lock_timeout_seconds=_positive_int_env(
                 "JUDGE_JOB_LOCK_TIMEOUT_SECONDS",
                 DEFAULT_LOCK_TIMEOUT_SECONDS,
+            ),
+            lock_refresh_seconds=_positive_int_env(
+                "JUDGE_JOB_LOCK_REFRESH_SECONDS",
+                DEFAULT_LOCK_REFRESH_SECONDS,
             ),
             poll_wait_ms=_positive_int_env("JUDGE_JOB_POLL_WAIT_MS", DEFAULT_POLL_WAIT_MS),
             idle_sleep_seconds=_ignored_positive_float_env(
