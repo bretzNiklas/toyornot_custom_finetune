@@ -384,10 +384,9 @@ class FakeRealtimeClient:
     def __init__(self) -> None:
         self.realtime = self
         self.channel_instance = FakeRealtimeChannel()
-        self.listen_started = asyncio.Event()
-        self.listen_stopped = asyncio.Event()
         self.channel_topics: list[str] = []
         self.removed_channels: list[FakeRealtimeChannel] = []
+        self.listen_calls = 0
 
     def channel(self, topic: str):
         self.channel_topics.append(topic)
@@ -395,11 +394,10 @@ class FakeRealtimeClient:
 
     async def remove_channel(self, channel) -> None:
         self.removed_channels.append(channel)
-        self.listen_stopped.set()
 
     async def listen(self) -> None:
-        self.listen_started.set()
-        await self.listen_stopped.wait()
+        self.listen_calls += 1
+        raise AssertionError("Deprecated realtime.listen() should not be called.")
 
 
 def build_completed_status_response(*, score: int = 7) -> PiecerateStatusResponse:
@@ -1038,7 +1036,6 @@ class JudgeApiHandoffCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         await asyncio.wait_for(realtime_client.channel_instance.subscribe_called.wait(), timeout=1)
-        await asyncio.wait_for(realtime_client.listen_started.wait(), timeout=1)
         return stop_event, task, realtime_client, piecerate_client
 
     async def _stop_worker(
@@ -1048,7 +1045,6 @@ class JudgeApiHandoffCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         realtime_client: FakeRealtimeClient,
     ) -> None:
         stop_event.set()
-        realtime_client.listen_stopped.set()
         await asyncio.wait_for(task, timeout=1)
 
     async def _wait_for(self, predicate, *, timeout: float = 1.0) -> None:
@@ -1183,6 +1179,7 @@ class JudgeApiHandoffCoordinatorTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.1)
             self.assertEqual(runtime.claim_calls, baseline_claim_calls)
             self.assertEqual(runtime.claim_calls, 1)
+            self.assertEqual(realtime_client.listen_calls, 0)
         finally:
             await self._stop_worker(stop_event, task, realtime_client)
 

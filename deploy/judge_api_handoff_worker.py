@@ -392,8 +392,6 @@ class HandoffWorkerCoordinator:
         while not self.stop_event.is_set():
             realtime_client = None
             channel = None
-            listen_task: asyncio.Task[None] | None = None
-            stop_wait_task: asyncio.Task[bool] | None = None
             try:
                 realtime_client = await self.realtime_client_factory(self.config)
                 channel = realtime_client.channel(REALTIME_CHANNEL_TOPIC)
@@ -410,22 +408,8 @@ class HandoffWorkerCoordinator:
                     callback=self._handle_realtime_payload,
                 )
                 await channel.subscribe(self._handle_realtime_status)
-                listen_task = asyncio.create_task(realtime_client.realtime.listen())
-                stop_wait_task = asyncio.create_task(self.stop_event.wait())
-                done, pending = await asyncio.wait(
-                    {listen_task, stop_wait_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for pending_task in pending:
-                    pending_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await pending_task
-                if stop_wait_task in done:
-                    return
-                if listen_task in done:
-                    listen_task.result()
-                    self.request_drain("realtime_listener_exit")
-                    await self._sleep_until_stop(REALTIME_RETRY_DELAY_SECONDS)
+                await self.stop_event.wait()
+                return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -436,10 +420,6 @@ class HandoffWorkerCoordinator:
                 if realtime_client is not None and channel is not None:
                     with contextlib.suppress(Exception):
                         await realtime_client.remove_channel(channel)
-                if listen_task is not None and not listen_task.done():
-                    listen_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await listen_task
 
     async def _sleep_until_stop(self, seconds: float) -> None:
         try:
