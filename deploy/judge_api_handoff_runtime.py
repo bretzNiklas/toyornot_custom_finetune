@@ -34,6 +34,7 @@ DEFAULT_JUDGED_IMAGE_ARCHIVE_DIR = "/srv/graffiti-student/runtime/judged-images"
 DEFAULT_LOCK_TIMEOUT_SECONDS = 600
 DEFAULT_POLL_WAIT_MS = 8_000
 DEFAULT_IDLE_SLEEP_SECONDS = 1.0
+DEFAULT_SAFETY_SWEEP_SECONDS = 600
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_BACKOFF_SCHEDULE = (30, 120, 600, 600)
 DEFAULT_USER_AGENT = (
@@ -96,6 +97,7 @@ class JudgeApiHandoffConfig:
     lock_timeout_seconds: int
     poll_wait_ms: int
     idle_sleep_seconds: float
+    safety_sweep_seconds: int
     max_attempts: int
     backoff_schedule_seconds: tuple[int, ...]
 
@@ -119,7 +121,14 @@ class JudgeApiHandoffConfig:
                 DEFAULT_LOCK_TIMEOUT_SECONDS,
             ),
             poll_wait_ms=_positive_int_env("JUDGE_JOB_POLL_WAIT_MS", DEFAULT_POLL_WAIT_MS),
-            idle_sleep_seconds=_positive_float_env("JUDGE_JOB_IDLE_SLEEP_SECONDS", DEFAULT_IDLE_SLEEP_SECONDS),
+            idle_sleep_seconds=_ignored_positive_float_env(
+                "JUDGE_JOB_IDLE_SLEEP_SECONDS",
+                DEFAULT_IDLE_SLEEP_SECONDS,
+            ),
+            safety_sweep_seconds=_positive_int_env(
+                "JUDGE_JOB_SAFETY_SWEEP_SECONDS",
+                DEFAULT_SAFETY_SWEEP_SECONDS,
+            ),
             max_attempts=_positive_int_env("JUDGE_JOB_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS),
             backoff_schedule_seconds=_parse_backoff_schedule(
                 os.environ.get("JUDGE_JOB_BACKOFF_SCHEDULE_SECONDS"),
@@ -136,6 +145,8 @@ class JudgeApiHandoffConfig:
 class JudgeApiJob:
     request_id: str
     status: str
+    created_at: str | None
+    started_at: str | None
     input_storage_bucket: str | None
     input_storage_path: str
     filename: str | None
@@ -299,6 +310,8 @@ class SupabaseJudgeApiRuntime:
             "worker_attempt_count": candidate.worker_attempt_count + 1,
             "updated_at": claimed_at,
         }
+        if candidate.status == JUDGE_JOB_STATUS_PENDING and candidate.started_at is None:
+            payload["started_at"] = claimed_at
 
         try:
             query = (
@@ -334,6 +347,26 @@ class SupabaseJudgeApiRuntime:
         if row is None:
             return None
         return normalize_result_row(row)
+
+    def get_next_pending_retry_at(self) -> datetime | None:
+        now_iso = utc_now_iso()
+        try:
+            response = (
+                self.supabase.table(self.config.jobs_table)
+                .select("next_attempt_at")
+                .eq("status", JUDGE_JOB_STATUS_PENDING)
+                .gt("next_attempt_at", now_iso)
+                .order("next_attempt_at")
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise RetryableWorkerError(f"Supabase retry schedule lookup failed: {exc}") from exc
+
+        row = _first_row(getattr(response, "data", None))
+        if row is None:
+            return None
+        return _as_optional_datetime(row.get("next_attempt_at"))
 
     def download_input_bytes(self, job: JudgeApiJob) -> bytes:
         bucket = job.input_bucket or self.config.input_bucket
@@ -628,6 +661,8 @@ def normalize_job_row(row: dict[str, Any]) -> JudgeApiJob:
     return JudgeApiJob(
         request_id=_required_row_str(row, "request_id"),
         status=_required_row_str(row, "status"),
+        created_at=_as_optional_str(row.get("created_at")),
+        started_at=_as_optional_str(row.get("started_at")),
         input_storage_bucket=_as_optional_str(row.get("input_storage_bucket")),
         input_storage_path=input_storage_path,
         filename=_as_optional_str(row.get("filename")),
@@ -841,6 +876,14 @@ def _positive_float_env(name: str, default: float) -> float:
     return value
 
 
+def _ignored_positive_float_env(name: str, default: float) -> float:
+    value = _positive_float_env(name, default)
+    raw = os.environ.get(name)
+    if raw is not None and raw.strip():
+        logger.warning("%s is ignored in event-driven handoff mode.", name)
+    return value
+
+
 def _parse_backoff_schedule(raw: str | None) -> tuple[int, ...]:
     if raw is None or not raw.strip():
         return DEFAULT_BACKOFF_SCHEDULE
@@ -901,6 +944,19 @@ def _as_optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_optional_datetime(value: Any) -> datetime | None:
+    raw = _as_optional_str(value)
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _response_json(response: httpx.Response, *, retryable_on_invalid_json: bool) -> dict[str, Any]:
