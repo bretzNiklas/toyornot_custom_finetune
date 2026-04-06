@@ -24,6 +24,7 @@ WORKER_SERVICE_NAME="${WORKER_SERVICE_NAME:-graffiti-student-worker}"
 HANDOFF_WORKER_SERVICE_NAME="${HANDOFF_WORKER_SERVICE_NAME:-graffiti-judge-handoff-worker}"
 GIT_REMOTE="${GIT_REMOTE:-origin}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health}"
+HEALTHCHECK_MAX_ATTEMPTS="${HEALTHCHECK_MAX_ATTEMPTS:-90}"
 
 can_sudo() {
     sudo -n true >/dev/null 2>&1
@@ -162,7 +163,8 @@ request = urllib.request.Request(
 )
 
 last_error = None
-for _ in range(30):
+max_attempts = int(os.environ.get("HEALTHCHECK_MAX_ATTEMPTS", "90"))
+for _ in range(max_attempts):
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.load(response)
@@ -174,5 +176,5 @@ for _ in range(30):
         last_error = exc
         time.sleep(1)
 
-raise SystemExit(f"Health check did not succeed after retries: {last_error}")
+raise SystemExit(f"Health check did not succeed after {max_attempts} retries: {last_error}")
 PY
