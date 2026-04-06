@@ -9,6 +9,9 @@ from PIL import Image
 
 from .checkpoint import load_student_bundle
 from .constants import CORE_MEDIA, SCORE_FIELDS, clamp_score
+
+
+SCOREABLE_MEDIA = (*CORE_MEDIA, "digital")
 from .data import decode_image_b64
 
 
@@ -65,7 +68,7 @@ class StudentPredictor:
         for field in SCORE_FIELDS:
             payload[field] = None
 
-        if usable and medium in CORE_MEDIA:
+        if usable and medium in SCOREABLE_MEDIA:
             payload["overall_score"] = clamp_score(float(raw["overall_score"]))
             color_applicable = raw["color_applicable_probability"] >= color_threshold
             for field in SCORE_FIELDS:

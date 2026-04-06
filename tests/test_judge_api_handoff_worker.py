@@ -400,7 +400,7 @@ class FakeRealtimeClient:
         raise AssertionError("Deprecated realtime.listen() should not be called.")
 
 
-def build_completed_status_response(*, score: int = 7) -> PiecerateStatusResponse:
+def build_completed_status_response(*, score: int = 7, medium: str = "wall_piece") -> PiecerateStatusResponse:
     return PiecerateStatusResponse(
         job_id="piecerate-job-1",
         request_id="piecerate-request-1",
@@ -412,7 +412,7 @@ def build_completed_status_response(*, score: int = 7) -> PiecerateStatusRespons
             "status": "completed",
             "result": {
                 "image_usable": True,
-                "medium": "wall_piece",
+                "medium": medium,
                 "overall_score": score,
                 "legibility": score,
                 "letter_structure": score,
@@ -961,6 +961,26 @@ class JudgeApiHandoffWorkerTests(unittest.TestCase):
             runtime.upserted_results[0]["response_payload"]["source_image"]["storage_kind"],
             "local_disk",
         )
+
+    def test_process_handoff_job_persists_digital_scores_without_nulling(self) -> None:
+        config = build_config()
+        runtime = FakeRuntime(config, claimed_jobs=[build_job()])
+        piecerate = FakePiecerateClient(
+            statuses=[build_completed_status_response(score=6, medium="digital")]
+        )
+
+        process_handoff_job(runtime, piecerate, config, build_job())
+
+        self.assertEqual(len(runtime.upserted_results), 1)
+        persisted = runtime.upserted_results[0]
+        self.assertEqual(persisted["medium"], "digital")
+        self.assertEqual(persisted["overall_score"], 6)
+        self.assertEqual(persisted["legibility"], 6)
+        self.assertEqual(persisted["letter_structure"], 6)
+        self.assertEqual(persisted["line_quality"], 6)
+        self.assertEqual(persisted["composition"], 6)
+        self.assertEqual(persisted["color_harmony"], 6)
+        self.assertEqual(persisted["originality"], 6)
 
     def test_retryable_failure_can_recover_on_later_iteration(self) -> None:
         config = build_config()
